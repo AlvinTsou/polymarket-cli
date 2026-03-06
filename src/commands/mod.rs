@@ -9,6 +9,7 @@ pub mod data;
 pub mod events;
 pub mod markets;
 pub mod profiles;
+pub mod review;
 pub mod series;
 pub mod smart;
 pub mod setup;

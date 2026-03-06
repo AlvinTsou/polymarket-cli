@@ -47,6 +47,8 @@ enum Commands {
     Comments(commands::comments::CommentsArgs),
     /// Look up public profiles
     Profiles(commands::profiles::ProfilesArgs),
+    /// Review a market: latest comments and odds history
+    Review(commands::review::ReviewArgs),
     /// Sports metadata and teams
     Sports(commands::sports::SportsArgs),
     /// Check and set contract approvals for trading
@@ -139,6 +141,14 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         }
         Commands::Profiles(args) => {
             commands::profiles::execute(
+                &polymarket_client_sdk::gamma::Client::default(),
+                args,
+                cli.output,
+            )
+            .await
+        }
+        Commands::Review(args) => {
+            commands::review::execute(
                 &polymarket_client_sdk::gamma::Client::default(),
                 args,
                 cli.output,
