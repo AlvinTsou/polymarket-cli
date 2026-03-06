@@ -7,6 +7,7 @@ pub mod comments;
 pub mod ctf;
 pub mod data;
 pub mod events;
+pub mod generate;
 pub mod markets;
 pub mod profiles;
 pub mod review;

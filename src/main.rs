@@ -51,6 +51,8 @@ enum Commands {
     Review(commands::review::ReviewArgs),
     /// Sports metadata and teams
     Sports(commands::sports::SportsArgs),
+    /// Generate a static trending markets page (HTML or JSON)
+    Generate(commands::generate::GenerateArgs),
     /// Check and set contract approvals for trading
     Approve(commands::approve::ApproveArgs),
     /// Interact with the CLOB (order book, trading, balances)
@@ -157,6 +159,14 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         }
         Commands::Sports(args) => {
             commands::sports::execute(
+                &polymarket_client_sdk::gamma::Client::default(),
+                args,
+                cli.output,
+            )
+            .await
+        }
+        Commands::Generate(args) => {
+            commands::generate::execute(
                 &polymarket_client_sdk::gamma::Client::default(),
                 args,
                 cli.output,
