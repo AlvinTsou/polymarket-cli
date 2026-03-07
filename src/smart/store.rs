@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 
-use super::{Signal, SmartScore, WalletSnapshot, WatchedWallet};
+use super::{Signal, SmartScore, TelegramConfig, WalletSnapshot, WatchedWallet};
 
 fn smart_dir() -> Result<PathBuf> {
     let home = dirs::home_dir().context("Could not determine home directory")?;
@@ -135,6 +135,24 @@ pub fn load_scores() -> Result<Vec<SmartScore>> {
 pub fn save_scores(scores: &[SmartScore]) -> Result<()> {
     let path = smart_dir()?.join("scores.json");
     let json = serde_json::to_string_pretty(scores)?;
+    fs::write(&path, json)?;
+    Ok(())
+}
+
+// ── Telegram config ─────────────────────────────────────────────
+
+pub fn load_telegram_config() -> Result<Option<TelegramConfig>> {
+    let path = smart_dir()?.join("telegram.json");
+    if !path.exists() {
+        return Ok(None);
+    }
+    let data = fs::read_to_string(&path)?;
+    Ok(Some(serde_json::from_str(&data)?))
+}
+
+pub fn save_telegram_config(config: &TelegramConfig) -> Result<()> {
+    let path = smart_dir()?.join("telegram.json");
+    let json = serde_json::to_string_pretty(config)?;
     fs::write(&path, json)?;
     Ok(())
 }

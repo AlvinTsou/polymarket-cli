@@ -132,6 +132,13 @@ pub struct AggregatedSignal {
     pub signals: Vec<Signal>,
 }
 
+/// Telegram Bot configuration.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TelegramConfig {
+    pub bot_token: String,
+    pub chat_id: i64,
+}
+
 /// Scoring result for a wallet.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SmartScore {

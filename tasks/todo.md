@@ -33,7 +33,7 @@
 
 - [x] 信號聚合：多錢包同方向偵測（2 wallets=MED, 3+=HIGH）
 - [x] `polymarket smart scan --notify` macOS 本地通知
-- [ ] Telegram Bot 推送整合
+- [x] Telegram Bot 推送整合 — setup/test/status + scan --notify 自動推送
 - [x] 改善評分模型：加入勝率（closed positions 分析, 25% weight）
 
 ## Sprint 3：跟單執行

@@ -9,9 +9,11 @@ use crate::output::OutputFormat;
 use crate::output::smart::{
     print_discover_results, print_profile, print_scan_result, print_signals, print_wallet_list,
 };
-use crate::smart::AggregatedSignal;
 use crate::smart::tracker::PositionChange;
-use crate::smart::{Signal, SmartScore, WatchedWallet, scorer, signals, store, tracker};
+use crate::smart::{
+    AggregatedSignal, Signal, SmartScore, TelegramConfig, WatchedWallet, scorer, signals, store,
+    tracker,
+};
 
 #[derive(Args)]
 pub struct SmartArgs {
@@ -82,6 +84,25 @@ pub enum SmartCommand {
         /// Wallet address (0x...)
         address: String,
     },
+
+    /// Configure Telegram notifications
+    Telegram {
+        #[command(subcommand)]
+        command: TelegramCommand,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum TelegramCommand {
+    /// Set up Telegram bot (saves token and auto-detects chat ID)
+    Setup {
+        /// Bot token from @BotFather
+        token: String,
+    },
+    /// Send a test notification
+    Test,
+    /// Show current Telegram config status
+    Status,
 }
 
 pub async fn execute(
@@ -108,6 +129,8 @@ pub async fn execute(
         SmartCommand::Signals { limit } => cmd_signals(limit, &output),
 
         SmartCommand::Profile { address } => cmd_profile(client, &address, &output).await,
+
+        SmartCommand::Telegram { command } => cmd_telegram(command, &output).await,
     }
 }
 
@@ -285,9 +308,17 @@ async fn cmd_scan(
     // Aggregate: detect multiple wallets converging on same market
     let aggregated = signals::aggregate_signals(&all_signals);
 
-    // macOS notification
+    // Notifications
     if notify && !all_signals.is_empty() {
         send_macos_notification(&all_signals, &aggregated);
+
+        // Telegram (if configured)
+        if let Ok(Some(tg_config)) = store::load_telegram_config() {
+            let text = build_telegram_text(&all_signals, &aggregated);
+            if let Err(e) = send_telegram_message(&tg_config, &text).await {
+                eprintln!("Telegram notification failed: {e}");
+            }
+        }
     }
 
     print_scan_result(&scan_summaries, &all_signals, &aggregated, output)
@@ -312,6 +343,176 @@ async fn cmd_profile(
 
     print_profile(&score, is_watched, output)
 }
+
+// ── Telegram ────────────────────────────────────────────────────
+
+async fn cmd_telegram(command: TelegramCommand, output: &OutputFormat) -> Result<()> {
+    match command {
+        TelegramCommand::Setup { token } => {
+            // Call getUpdates to find the chat_id
+            let url = format!("https://api.telegram.org/bot{token}/getUpdates");
+            let resp: serde_json::Value = reqwest::get(&url).await?.json().await?;
+
+            if !resp["ok"].as_bool().unwrap_or(false) {
+                anyhow::bail!(
+                    "Invalid bot token. Please check with @BotFather.\nAPI response: {}",
+                    resp
+                );
+            }
+
+            let results = resp["result"].as_array();
+            let chat_id = results
+                .and_then(|arr| arr.iter().rev().find_map(|u| u["message"]["chat"]["id"].as_i64()));
+
+            match chat_id {
+                Some(id) => {
+                    let config = TelegramConfig {
+                        bot_token: token,
+                        chat_id: id,
+                    };
+                    store::save_telegram_config(&config)?;
+                    match output {
+                        OutputFormat::Table => {
+                            println!("Telegram configured! chat_id={id}");
+                            println!("Run `polymarket smart telegram test` to verify.");
+                        }
+                        OutputFormat::Json => {
+                            println!(
+                                "{}",
+                                serde_json::json!({"ok": true, "chat_id": id})
+                            );
+                        }
+                    }
+                }
+                None => {
+                    anyhow::bail!(
+                        "No messages found. Please send any message to your bot first, then re-run setup."
+                    );
+                }
+            }
+            Ok(())
+        }
+        TelegramCommand::Test => {
+            let config = store::load_telegram_config()?
+                .ok_or_else(|| anyhow::anyhow!("Telegram not configured. Run `polymarket smart telegram setup <token>` first."))?;
+
+            send_telegram_message(&config, "Polymarket Smart Money — test notification").await?;
+            match output {
+                OutputFormat::Table => println!("Test message sent!"),
+                OutputFormat::Json => {
+                    println!("{}", serde_json::json!({"ok": true, "sent": true}));
+                }
+            }
+            Ok(())
+        }
+        TelegramCommand::Status => {
+            match store::load_telegram_config()? {
+                Some(config) => {
+                    match output {
+                        OutputFormat::Table => {
+                            println!("Telegram: configured");
+                            println!("Chat ID:  {}", config.chat_id);
+                            println!("Token:    {}...", &config.bot_token[..10]);
+                        }
+                        OutputFormat::Json => {
+                            println!(
+                                "{}",
+                                serde_json::json!({
+                                    "configured": true,
+                                    "chat_id": config.chat_id,
+                                })
+                            );
+                        }
+                    }
+                }
+                None => {
+                    match output {
+                        OutputFormat::Table => println!("Telegram: not configured"),
+                        OutputFormat::Json => {
+                            println!("{}", serde_json::json!({"configured": false}));
+                        }
+                    }
+                }
+            }
+            Ok(())
+        }
+    }
+}
+
+async fn send_telegram_message(config: &TelegramConfig, text: &str) -> Result<()> {
+    let url = format!(
+        "https://api.telegram.org/bot{}/sendMessage",
+        config.bot_token
+    );
+    let body = serde_json::json!({
+        "chat_id": config.chat_id,
+        "text": text,
+        "parse_mode": "Markdown",
+    });
+    let resp: serde_json::Value = reqwest::Client::new()
+        .post(&url)
+        .json(&body)
+        .send()
+        .await?
+        .json()
+        .await?;
+    if !resp["ok"].as_bool().unwrap_or(false) {
+        anyhow::bail!("Telegram API error: {}", resp);
+    }
+    Ok(())
+}
+
+fn build_telegram_text(signals: &[Signal], aggregated: &[AggregatedSignal]) -> String {
+    let mut lines = vec![format!("*Polymarket: {} signal(s)*", signals.len())];
+
+    // Show aggregated first if any
+    for agg in aggregated {
+        lines.push(format!(
+            "🔥 *{}* {} wallets {} on `{}`\n   Outcome: {} | Size: {:.1} | Price: {:.2}",
+            agg.confidence,
+            agg.wallet_count,
+            agg.direction,
+            agg.market_title,
+            agg.outcome,
+            agg.total_size,
+            agg.avg_price,
+        ));
+    }
+
+    // Individual signals (skip those already in aggregated)
+    let remaining: Vec<&Signal> = if aggregated.is_empty() {
+        signals.iter().collect()
+    } else {
+        signals
+            .iter()
+            .filter(|s| {
+                !aggregated.iter().any(|a| {
+                    a.signals.iter().any(|as_| as_.id == s.id)
+                })
+            })
+            .collect()
+    };
+
+    for sig in remaining.iter().take(5) {
+        lines.push(format!(
+            "{} {} `{}` [{}] size:{} @{}",
+            sig.signal_type,
+            sig.confidence,
+            sig.market_title,
+            sig.outcome,
+            sig.size,
+            sig.price,
+        ));
+    }
+
+    if remaining.len() > 5 {
+        lines.push(format!("...and {} more", remaining.len() - 5));
+    }
+
+    lines.join("\n")
+}
+
+// ── Notifications ───────────────────────────────────────────────
 
 fn send_macos_notification(signals: &[Signal], aggregated: &[AggregatedSignal]) {
     let title = format!("Polymarket: {} signal(s) detected", signals.len());
