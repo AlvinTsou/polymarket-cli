@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 
-use super::{Signal, SmartScore, TelegramConfig, WalletSnapshot, WatchedWallet};
+use super::{FollowRecord, Signal, SmartScore, TelegramConfig, WalletSnapshot, WatchedWallet};
 
 fn smart_dir() -> Result<PathBuf> {
     let home = dirs::home_dir().context("Could not determine home directory")?;
@@ -155,4 +155,41 @@ pub fn save_telegram_config(config: &TelegramConfig) -> Result<()> {
     let json = serde_json::to_string_pretty(config)?;
     fs::write(&path, json)?;
     Ok(())
+}
+
+// ── Follow records (append-only JSONL) ──────────────────────────
+
+pub fn append_follow_record(record: &FollowRecord) -> Result<()> {
+    use std::io::Write;
+    let path = smart_dir()?.join("follows.jsonl");
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)?;
+    writeln!(file, "{}", serde_json::to_string(record)?)?;
+    Ok(())
+}
+
+pub fn load_follow_records() -> Result<Vec<FollowRecord>> {
+    let path = smart_dir()?.join("follows.jsonl");
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let data = fs::read_to_string(&path)?;
+    Ok(data
+        .lines()
+        .filter(|l| !l.is_empty())
+        .filter_map(|l| serde_json::from_str(l).ok())
+        .collect())
+}
+
+/// Sum of USDC spent today (for daily limit).
+pub fn today_spend() -> Result<f64> {
+    let records = load_follow_records()?;
+    let today = chrono::Utc::now().date_naive();
+    Ok(records
+        .iter()
+        .filter(|r| !r.dry_run && r.timestamp.date_naive() == today)
+        .map(|r| r.amount_usdc)
+        .sum())
 }

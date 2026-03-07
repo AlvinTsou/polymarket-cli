@@ -19,6 +19,7 @@ pub struct WatchedWallet {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PositionSnapshot {
     pub condition_id: String,
+    pub asset: String, // token_id (U256 as decimal string)
     pub title: String,
     pub slug: String,
     pub outcome: String,
@@ -86,6 +87,7 @@ pub struct Signal {
     pub market_title: String,
     pub market_slug: String,
     pub condition_id: String,
+    pub asset: String, // token_id for order placement
     pub outcome: String,
     pub price: String,
     pub size: String,
@@ -137,6 +139,46 @@ pub struct AggregatedSignal {
 pub struct TelegramConfig {
     pub bot_token: String,
     pub chat_id: i64,
+}
+
+/// Configuration for auto-follow trading.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct FollowConfig {
+    /// Max USDC per single trade
+    pub max_per_trade: f64,
+    /// Max USDC total per day
+    pub max_per_day: f64,
+    /// Minimum signal confidence to follow
+    pub min_confidence: SignalConfidence,
+    /// Dry-run mode (log only, no real orders)
+    pub dry_run: bool,
+}
+
+impl Default for FollowConfig {
+    fn default() -> Self {
+        Self {
+            max_per_trade: 10.0,
+            max_per_day: 50.0,
+            min_confidence: SignalConfidence::Medium,
+            dry_run: true, // safe default
+        }
+    }
+}
+
+/// Record of a follow trade (executed or dry-run).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct FollowRecord {
+    pub timestamp: DateTime<Utc>,
+    pub signal_id: String,
+    pub market_title: String,
+    pub condition_id: String,
+    pub asset: String,
+    pub outcome: String,
+    pub side: String,
+    pub amount_usdc: f64,
+    pub price: f64,
+    pub dry_run: bool,
+    pub order_id: Option<String>,
 }
 
 /// Scoring result for a wallet.

@@ -38,10 +38,12 @@
 
 ## Sprint 3：跟單執行
 
-- [ ] 半自動跟單：`polymarket smart follow` 互動確認下單
-- [ ] 自動跟單規則：`polymarket smart auto-follow --max-per-trade 50`
-- [ ] Dry-run 模式（只記錄，不下單）
-- [ ] 每筆 / 每日上限安全機制
+- [x] 半自動跟單：`polymarket smart follow` 互動選擇信號 + 確認下單
+- [x] 自動跟單規則：`polymarket smart auto-follow --max-per-trade --max-per-day --min-confidence`
+- [x] Dry-run 模式（`--dry-run`，預設開啟，只記錄不下單）
+- [x] 每筆 / 每日上限安全機制（today_spend 追蹤，超限自動停止）
+- [x] Follow 歷史記錄：`polymarket smart history`
+- [x] PositionSnapshot / Signal 加入 asset (token_id) 用於下單
 
 ## Sprint 4：Dashboard + 回測
 

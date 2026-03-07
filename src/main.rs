@@ -189,6 +189,8 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
                 &polymarket_client_sdk::data::Client::default(),
                 args,
                 cli.output,
+                cli.private_key.as_deref(),
+                cli.signature_type.as_deref(),
             )
             .await
         }

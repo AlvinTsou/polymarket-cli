@@ -39,6 +39,7 @@ pub async fn scan_wallet(
         .iter()
         .map(|p| PositionSnapshot {
             condition_id: p.condition_id.to_string(),
+            asset: p.asset.to_string(),
             title: p.title.clone(),
             slug: p.slug.clone(),
             outcome: p.outcome.clone(),

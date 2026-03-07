@@ -35,6 +35,7 @@ pub fn generate_signals(wallet: &WatchedWallet, changes: &[PositionChange]) -> V
                 market_title: change.position.title.clone(),
                 market_slug: change.position.slug.clone(),
                 condition_id: change.position.condition_id.clone(),
+                asset: change.position.asset.clone(),
                 outcome: change.position.outcome.clone(),
                 price: change.position.cur_price.clone(),
                 size: change.position.size.clone(),

@@ -11,8 +11,8 @@ use crate::output::smart::{
 };
 use crate::smart::tracker::PositionChange;
 use crate::smart::{
-    AggregatedSignal, Signal, SmartScore, TelegramConfig, WatchedWallet, scorer, signals, store,
-    tracker,
+    AggregatedSignal, FollowRecord, Signal, SignalConfidence, SmartScore, TelegramConfig,
+    WatchedWallet, scorer, signals, store, tracker,
 };
 
 #[derive(Args)]
@@ -85,6 +85,47 @@ pub enum SmartCommand {
         address: String,
     },
 
+    /// Interactive follow: pick a signal and place an order
+    Follow {
+        /// USDC amount per trade
+        #[arg(long, default_value = "10")]
+        amount: f64,
+
+        /// Dry-run mode (log only, no real orders)
+        #[arg(long)]
+        dry_run: bool,
+    },
+
+    /// Auto-follow signals from scan (runs scan + places orders)
+    AutoFollow {
+        /// Max USDC per single trade
+        #[arg(long, default_value = "10")]
+        max_per_trade: f64,
+
+        /// Max USDC total per day
+        #[arg(long, default_value = "50")]
+        max_per_day: f64,
+
+        /// Minimum confidence: low, med, high
+        #[arg(long, default_value = "med")]
+        min_confidence: String,
+
+        /// Dry-run mode (log only, no real orders)
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Also send notifications
+        #[arg(long)]
+        notify: bool,
+    },
+
+    /// Show follow trade history
+    History {
+        /// Max records to show
+        #[arg(long, default_value = "20")]
+        limit: usize,
+    },
+
     /// Configure Telegram notifications
     Telegram {
         #[command(subcommand)]
@@ -109,6 +150,8 @@ pub async fn execute(
     client: &data::Client,
     args: SmartArgs,
     output: OutputFormat,
+    private_key: Option<&str>,
+    signature_type: Option<&str>,
 ) -> Result<()> {
     match args.command {
         SmartCommand::Discover {
@@ -129,6 +172,34 @@ pub async fn execute(
         SmartCommand::Signals { limit } => cmd_signals(limit, &output),
 
         SmartCommand::Profile { address } => cmd_profile(client, &address, &output).await,
+
+        SmartCommand::Follow { amount, dry_run } => {
+            cmd_follow(amount, dry_run, private_key, signature_type, &output).await
+        }
+
+        SmartCommand::AutoFollow {
+            max_per_trade,
+            max_per_day,
+            min_confidence,
+            dry_run,
+            notify,
+        } => {
+            let conf = parse_confidence(&min_confidence)?;
+            cmd_auto_follow(
+                client,
+                max_per_trade,
+                max_per_day,
+                conf,
+                dry_run,
+                notify,
+                private_key,
+                signature_type,
+                &output,
+            )
+            .await
+        }
+
+        SmartCommand::History { limit } => cmd_history(limit, &output),
 
         SmartCommand::Telegram { command } => cmd_telegram(command, &output).await,
     }
@@ -342,6 +413,379 @@ async fn cmd_profile(
         .any(|w| w.address.to_lowercase() == address.to_lowercase());
 
     print_profile(&score, is_watched, output)
+}
+
+// ── Follow ──────────────────────────────────────────────────────
+
+fn parse_confidence(s: &str) -> Result<SignalConfidence> {
+    match s.to_lowercase().as_str() {
+        "low" => Ok(SignalConfidence::Low),
+        "med" | "medium" => Ok(SignalConfidence::Medium),
+        "high" => Ok(SignalConfidence::High),
+        _ => anyhow::bail!("Invalid confidence: {s}. Use: low, med, high"),
+    }
+}
+
+fn confidence_rank(c: &SignalConfidence) -> u8 {
+    match c {
+        SignalConfidence::Low => 1,
+        SignalConfidence::Medium => 2,
+        SignalConfidence::High => 3,
+    }
+}
+
+async fn cmd_follow(
+    amount: f64,
+    dry_run: bool,
+    private_key: Option<&str>,
+    signature_type: Option<&str>,
+    output: &OutputFormat,
+) -> Result<()> {
+    use crate::smart::SignalDirection;
+
+    let recent_signals = store::load_signals(20)?;
+    if recent_signals.is_empty() {
+        anyhow::bail!("No signals. Run `polymarket smart scan` first.");
+    }
+
+    // Show signals for selection
+    println!("Recent signals:");
+    for (i, sig) in recent_signals.iter().enumerate() {
+        let dir = sig.signal_type.direction();
+        println!(
+            "  [{i}] {} {} {} — {} [{}] @ {} ({})",
+            sig.timestamp.format("%m-%d %H:%M"),
+            sig.signal_type,
+            sig.confidence,
+            sig.market_title,
+            sig.outcome,
+            sig.price,
+            if dir == SignalDirection::Buy { "BUY" } else { "SELL" },
+        );
+    }
+
+    println!("\nEnter signal number to follow (or 'q' to quit):");
+
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input)?;
+    let input = input.trim();
+
+    if input == "q" || input.is_empty() {
+        println!("Cancelled.");
+        return Ok(());
+    }
+
+    let idx: usize = input
+        .parse()
+        .map_err(|_| anyhow::anyhow!("Invalid number"))?;
+    if idx >= recent_signals.len() {
+        anyhow::bail!("Signal {idx} out of range");
+    }
+
+    let signal = &recent_signals[idx];
+    let direction = signal.signal_type.direction();
+    let price: f64 = signal.price.parse().unwrap_or(0.5);
+
+    println!("\n--- Order Preview ---");
+    println!("Market:    {}", signal.market_title);
+    println!("Outcome:   {}", signal.outcome);
+    println!("Direction: {direction}");
+    println!("Amount:    ${amount:.2} USDC");
+    println!("Price:     {price}");
+    println!("Token ID:  {}", signal.asset);
+    if dry_run {
+        println!("Mode:      DRY RUN (no real order)");
+    }
+
+    println!("\nConfirm? (y/n):");
+    let mut confirm = String::new();
+    std::io::stdin().read_line(&mut confirm)?;
+
+    if confirm.trim().to_lowercase() != "y" {
+        println!("Cancelled.");
+        return Ok(());
+    }
+
+    let side_str = match direction {
+        SignalDirection::Buy => "BUY",
+        SignalDirection::Sell => "SELL",
+    };
+
+    let order_id = if dry_run {
+        println!("[DRY RUN] Would place {side_str} order for ${amount:.2} on {}", signal.market_title);
+        None
+    } else {
+        let result = place_follow_order(
+            &signal.asset,
+            &direction,
+            amount,
+            price,
+            private_key,
+            signature_type,
+        )
+        .await?;
+        println!("Order placed! ID: {result}");
+        Some(result)
+    };
+
+    let record = FollowRecord {
+        timestamp: Utc::now(),
+        signal_id: signal.id.clone(),
+        market_title: signal.market_title.clone(),
+        condition_id: signal.condition_id.clone(),
+        asset: signal.asset.clone(),
+        outcome: signal.outcome.clone(),
+        side: side_str.to_string(),
+        amount_usdc: amount,
+        price,
+        dry_run,
+        order_id,
+    };
+    store::append_follow_record(&record)?;
+
+    match output {
+        OutputFormat::Table => {}
+        OutputFormat::Json => {
+            println!("{}", serde_json::to_string_pretty(&record)?);
+        }
+    }
+    Ok(())
+}
+
+async fn cmd_auto_follow(
+    client: &data::Client,
+    max_per_trade: f64,
+    max_per_day: f64,
+    min_confidence: SignalConfidence,
+    dry_run: bool,
+    notify: bool,
+    private_key: Option<&str>,
+    signature_type: Option<&str>,
+    output: &OutputFormat,
+) -> Result<()> {
+    use crate::smart::SignalDirection;
+
+    // Check daily limit
+    let spent_today = store::today_spend()?;
+    let remaining = max_per_day - spent_today;
+    if remaining <= 0.0 && !dry_run {
+        anyhow::bail!(
+            "Daily limit reached: ${spent_today:.2} / ${max_per_day:.2}. Reset tomorrow."
+        );
+    }
+
+    // Run scan first
+    let wallets = store::load_wallets()?;
+    if wallets.is_empty() {
+        anyhow::bail!("No wallets in watch list.");
+    }
+
+    let mut all_signals = Vec::new();
+    let mut scan_summaries: Vec<ScanSummary> = Vec::new();
+
+    for wallet in &wallets {
+        match tracker::scan_wallet(client, &wallet.address).await {
+            Ok((changes, snapshot)) => {
+                let sigs = signals::generate_signals(wallet, &changes);
+                scan_summaries.push(ScanSummary {
+                    address: wallet.address.clone(),
+                    tag: wallet.tag.clone(),
+                    positions: snapshot.positions.len(),
+                    changes: changes.len(),
+                    signals: sigs.len(),
+                    change_details: changes,
+                });
+                all_signals.extend(sigs);
+            }
+            Err(e) => eprintln!("Error scanning {}: {e}", wallet.address),
+        }
+    }
+
+    store::append_signals(&all_signals)?;
+    let aggregated = signals::aggregate_signals(&all_signals);
+
+    // Filter signals by confidence
+    let eligible: Vec<&Signal> = all_signals
+        .iter()
+        .filter(|s| confidence_rank(&s.confidence) >= confidence_rank(&min_confidence))
+        .collect();
+
+    println!(
+        "Scan: {} signal(s), {} eligible (>= {min_confidence})",
+        all_signals.len(),
+        eligible.len(),
+    );
+
+    // Execute follow trades
+    let mut followed = 0u32;
+    let mut spent = 0.0f64;
+
+    for sig in &eligible {
+        if spent + max_per_trade > remaining && !dry_run {
+            eprintln!("Daily limit would be exceeded, stopping.");
+            break;
+        }
+
+        let direction = sig.signal_type.direction();
+        let price: f64 = sig.price.parse().unwrap_or(0.5);
+        let side_str = match direction {
+            SignalDirection::Buy => "BUY",
+            SignalDirection::Sell => "SELL",
+        };
+
+        let order_id = if dry_run {
+            println!(
+                "[DRY RUN] {side_str} ${max_per_trade:.2} — {} [{}] @ {price}",
+                sig.market_title, sig.outcome
+            );
+            None
+        } else {
+            match place_follow_order(
+                &sig.asset,
+                &direction,
+                max_per_trade,
+                price,
+                private_key,
+                signature_type,
+            )
+            .await
+            {
+                Ok(id) => {
+                    println!(
+                        "Placed {side_str} ${max_per_trade:.2} — {} [{}] -> {id}",
+                        sig.market_title, sig.outcome
+                    );
+                    Some(id)
+                }
+                Err(e) => {
+                    eprintln!("Order failed for {}: {e}", sig.market_title);
+                    continue;
+                }
+            }
+        };
+
+        let record = FollowRecord {
+            timestamp: Utc::now(),
+            signal_id: sig.id.clone(),
+            market_title: sig.market_title.clone(),
+            condition_id: sig.condition_id.clone(),
+            asset: sig.asset.clone(),
+            outcome: sig.outcome.clone(),
+            side: side_str.to_string(),
+            amount_usdc: max_per_trade,
+            price,
+            dry_run,
+            order_id,
+        };
+        store::append_follow_record(&record)?;
+        followed += 1;
+        spent += max_per_trade;
+    }
+
+    println!(
+        "\nFollowed: {followed} trade(s), spent: ${spent:.2}{}",
+        if dry_run { " (dry run)" } else { "" }
+    );
+
+    // Notifications
+    if notify && !all_signals.is_empty() {
+        send_macos_notification(&all_signals, &aggregated);
+        if let Ok(Some(tg_config)) = store::load_telegram_config() {
+            let text = build_telegram_text(&all_signals, &aggregated);
+            if let Err(e) = send_telegram_message(&tg_config, &text).await {
+                eprintln!("Telegram notification failed: {e}");
+            }
+        }
+    }
+
+    if matches!(output, OutputFormat::Json) {
+        let data = serde_json::json!({
+            "signals_total": all_signals.len(),
+            "signals_eligible": eligible.len(),
+            "followed": followed,
+            "spent_usdc": spent,
+            "dry_run": dry_run,
+        });
+        crate::output::print_json(&data)?;
+    }
+    Ok(())
+}
+
+async fn place_follow_order(
+    asset: &str,
+    direction: &crate::smart::SignalDirection,
+    amount_usdc: f64,
+    _price: f64,
+    private_key: Option<&str>,
+    signature_type: Option<&str>,
+) -> Result<String> {
+    use polymarket_client_sdk::clob::types::{Amount, OrderType, Side};
+    use polymarket_client_sdk::types::{Decimal, U256};
+    use std::str::FromStr;
+
+    let signer = crate::auth::resolve_signer(private_key)?;
+    let clob_client = crate::auth::authenticate_with_signer(&signer, signature_type).await?;
+
+    let token_id = U256::from_str(asset)
+        .map_err(|_| anyhow::anyhow!("Invalid token_id: {asset}"))?;
+
+    let side = match direction {
+        crate::smart::SignalDirection::Buy => Side::Buy,
+        crate::smart::SignalDirection::Sell => Side::Sell,
+    };
+
+    let amount = Amount::usdc(
+        Decimal::from_str(&format!("{amount_usdc:.2}"))
+            .map_err(|_| anyhow::anyhow!("Invalid amount"))?,
+    )?;
+
+    let order = clob_client
+        .market_order()
+        .token_id(token_id)
+        .side(side)
+        .amount(amount)
+        .order_type(OrderType::FOK)
+        .build()
+        .await?;
+    let signed = clob_client.sign(&signer, order).await?;
+    let result = clob_client.post_order(signed).await?;
+
+    Ok(result.order_id)
+}
+
+fn cmd_history(limit: usize, output: &OutputFormat) -> Result<()> {
+    let mut records = store::load_follow_records()?;
+    records.reverse(); // newest first
+    records.truncate(limit);
+
+    match output {
+        OutputFormat::Table => {
+            if records.is_empty() {
+                println!("No follow trades yet.");
+                return Ok(());
+            }
+            println!("--- Follow History ({} record(s)) ---", records.len());
+            for r in &records {
+                let mode = if r.dry_run { "[DRY]" } else { "[LIVE]" };
+                let oid = r.order_id.as_deref().unwrap_or("—");
+                println!(
+                    "  {} {} {} ${:.2} — {} [{}] @ {} -> {}",
+                    r.timestamp.format("%m-%d %H:%M"),
+                    mode,
+                    r.side,
+                    r.amount_usdc,
+                    r.market_title,
+                    r.outcome,
+                    r.price,
+                    oid,
+                );
+            }
+        }
+        OutputFormat::Json => {
+            println!("{}", serde_json::to_string_pretty(&records)?);
+        }
+    }
+    Ok(())
 }
 
 // ── Telegram ────────────────────────────────────────────────────
