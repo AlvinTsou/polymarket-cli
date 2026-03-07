@@ -47,9 +47,10 @@
 
 ## Sprint 4：Dashboard + 回測
 
-- [ ] Cloudflare Worker Dashboard（擴展 `worker/`）
-- [ ] 歷史績效追蹤（跟單 ROI）
-- [ ] 回測模式
+- [x] `smart roi` — 跟單 ROI 追蹤（entry vs current price, PnL 計算）
+- [x] `smart backtest` — 信號回測（模擬不同金額/信心等級的回報）
+- [x] `smart report` — HTML Dashboard（dark theme, auto-open in browser）
+- [x] 快照價格查詢（current_price_map, load_all_snapshots）
 
 ## 現有分支狀態
 

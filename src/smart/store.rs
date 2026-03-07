@@ -183,6 +183,36 @@ pub fn load_follow_records() -> Result<Vec<FollowRecord>> {
         .collect())
 }
 
+/// Load all snapshots (all watched wallets).
+pub fn load_all_snapshots() -> Result<Vec<WalletSnapshot>> {
+    let dir = snapshots_dir()?;
+    let mut snapshots = Vec::new();
+    for entry in fs::read_dir(&dir)? {
+        let entry = entry?;
+        if entry.path().extension().is_some_and(|e| e == "json") {
+            let data = fs::read_to_string(entry.path())?;
+            if let Ok(snap) = serde_json::from_str::<WalletSnapshot>(&data) {
+                snapshots.push(snap);
+            }
+        }
+    }
+    Ok(snapshots)
+}
+
+/// Build a map of (condition_id) -> cur_price from all snapshots.
+pub fn current_price_map() -> Result<std::collections::HashMap<String, f64>> {
+    let snapshots = load_all_snapshots()?;
+    let mut map = std::collections::HashMap::new();
+    for snap in &snapshots {
+        for pos in &snap.positions {
+            if let Ok(price) = pos.cur_price.parse::<f64>() {
+                map.insert(pos.condition_id.clone(), price);
+            }
+        }
+    }
+    Ok(map)
+}
+
 /// Sum of USDC spent today (for daily limit).
 pub fn today_spend() -> Result<f64> {
     let records = load_follow_records()?;
