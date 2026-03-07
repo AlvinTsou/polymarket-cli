@@ -92,6 +92,46 @@ pub struct Signal {
     pub prev_size: Option<String>,
 }
 
+/// Direction of a trade signal (for aggregation).
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum SignalDirection {
+    Buy,  // New or Increase
+    Sell, // Close or Decrease
+}
+
+impl std::fmt::Display for SignalDirection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Buy => write!(f, "BUY"),
+            Self::Sell => write!(f, "SELL"),
+        }
+    }
+}
+
+impl SignalType {
+    pub fn direction(&self) -> SignalDirection {
+        match self {
+            Self::NewPosition | Self::IncreasePosition => SignalDirection::Buy,
+            Self::ClosePosition | Self::DecreasePosition => SignalDirection::Sell,
+        }
+    }
+}
+
+/// Multiple wallets converging on the same market+direction.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AggregatedSignal {
+    pub condition_id: String,
+    pub market_title: String,
+    pub outcome: String,
+    pub direction: SignalDirection,
+    pub confidence: SignalConfidence,
+    pub wallet_count: usize,
+    pub wallets: Vec<String>,
+    pub total_size: f64,
+    pub avg_price: f64,
+    pub signals: Vec<Signal>,
+}
+
 /// Scoring result for a wallet.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SmartScore {

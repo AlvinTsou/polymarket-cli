@@ -6,7 +6,7 @@ use tabled::{Table, Tabled};
 use super::{OutputFormat, truncate};
 use crate::commands::smart::ScanSummary;
 use crate::smart::tracker::ChangeType;
-use crate::smart::{Signal, SmartScore, WatchedWallet};
+use crate::smart::{AggregatedSignal, Signal, SmartScore, WatchedWallet};
 
 // ── Discover ─────────────────────────────────────────────────────
 
@@ -95,6 +95,7 @@ pub fn print_wallet_list(wallets: &[WatchedWallet], output: &OutputFormat) -> Re
 pub fn print_scan_result(
     summaries: &[ScanSummary],
     all_signals: &[Signal],
+    aggregated: &[AggregatedSignal],
     output: &OutputFormat,
 ) -> Result<()> {
     match output {
@@ -132,6 +133,12 @@ pub fn print_scan_result(
                 print_signals_table(all_signals);
             }
 
+            // Aggregated signals (multi-wallet convergence)
+            if !aggregated.is_empty() {
+                println!("\n--- Convergence ({} group(s)) ---", aggregated.len());
+                print_aggregated_table(aggregated);
+            }
+
             // Per-wallet change details
             for summary in summaries {
                 if summary.change_details.is_empty() {
@@ -167,6 +174,7 @@ pub fn print_scan_result(
                 "wallets_scanned": summaries.len(),
                 "total_changes": summaries.iter().map(|s| s.changes).sum::<usize>(),
                 "signals": all_signals,
+                "aggregated": aggregated,
                 "summaries": summaries.iter().map(|s| json!({
                     "address": s.address,
                     "tag": s.tag,
@@ -232,6 +240,50 @@ fn print_signals_table(signals: &[Signal]) {
             outcome: s.outcome.clone(),
             size: s.size.clone(),
             price: s.price.clone(),
+        })
+        .collect();
+    let table = Table::new(rows).with(Style::rounded()).to_string();
+    println!("{table}");
+}
+
+// ── Aggregated signals ──────────────────────────────────────────
+
+fn print_aggregated_table(aggregated: &[AggregatedSignal]) {
+    #[derive(Tabled)]
+    struct Row {
+        #[tabled(rename = "Dir")]
+        direction: String,
+        #[tabled(rename = "Conf")]
+        confidence: String,
+        #[tabled(rename = "Wallets")]
+        wallet_count: String,
+        #[tabled(rename = "Market")]
+        market: String,
+        #[tabled(rename = "Outcome")]
+        outcome: String,
+        #[tabled(rename = "Total Size")]
+        total_size: String,
+        #[tabled(rename = "Avg Price")]
+        avg_price: String,
+        #[tabled(rename = "Who")]
+        who: String,
+    }
+    let rows: Vec<Row> = aggregated
+        .iter()
+        .map(|a| Row {
+            direction: a.direction.to_string(),
+            confidence: a.confidence.to_string(),
+            wallet_count: a.wallet_count.to_string(),
+            market: truncate(&a.market_title, 30),
+            outcome: a.outcome.clone(),
+            total_size: format!("{:.1}", a.total_size),
+            avg_price: format!("{:.2}", a.avg_price),
+            who: a
+                .wallets
+                .iter()
+                .map(|w| truncate(w, 10))
+                .collect::<Vec<_>>()
+                .join(", "),
         })
         .collect();
     let table = Table::new(rows).with(Style::rounded()).to_string();

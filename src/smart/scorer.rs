@@ -39,7 +39,20 @@ pub async fn score_wallet(client: &data::Client, address: &str) -> Result<SmartS
         .filter_map(|p| p.cash_pnl.to_f64())
         .sum();
 
-    let score = compute_score(portfolio_value, markets_traded, total_pnl);
+    // Win rate: positions with positive PnL
+    let closed_with_pnl: Vec<f64> = positions
+        .iter()
+        .filter_map(|p| p.cash_pnl.to_f64())
+        .filter(|pnl| pnl.abs() > 0.01)
+        .collect();
+    let win_rate = if closed_with_pnl.is_empty() {
+        None
+    } else {
+        let wins = closed_with_pnl.iter().filter(|p| **p > 0.0).count();
+        Some(wins as f64 / closed_with_pnl.len() as f64)
+    };
+
+    let score = compute_score(portfolio_value, markets_traded, total_pnl, win_rate);
 
     Ok(SmartScore {
         address: address.to_string(),
@@ -89,7 +102,12 @@ pub fn score_from_leaderboard(
     }
 }
 
-fn compute_score(portfolio_value: f64, markets_traded: u32, total_pnl: f64) -> f64 {
+fn compute_score(
+    portfolio_value: f64,
+    markets_traded: u32,
+    total_pnl: f64,
+    win_rate: Option<f64>,
+) -> f64 {
     let value_score = if portfolio_value > 0.0 {
         (portfolio_value.log10().max(0.0) / 6.0 * 100.0).min(100.0)
     } else {
@@ -108,7 +126,15 @@ fn compute_score(portfolio_value: f64, markets_traded: u32, total_pnl: f64) -> f
         0.0
     };
 
-    value_score * 0.35 + diversity_score * 0.30 + pnl_score * 0.35
+    // Win rate bonus: 0-100 scaled, only if we have data
+    let win_rate_score = win_rate.map_or(0.0, |wr| wr * 100.0);
+
+    if win_rate.is_some() {
+        // With win rate: rebalance weights
+        value_score * 0.25 + diversity_score * 0.20 + pnl_score * 0.30 + win_rate_score * 0.25
+    } else {
+        value_score * 0.35 + diversity_score * 0.30 + pnl_score * 0.35
+    }
 }
 
 #[cfg(test)]
@@ -117,19 +143,33 @@ mod tests {
 
     #[test]
     fn compute_score_zero_inputs() {
-        assert_eq!(compute_score(0.0, 0, 0.0), 0.0);
+        assert_eq!(compute_score(0.0, 0, 0.0, None), 0.0);
     }
 
     #[test]
     fn compute_score_high_values() {
-        let score = compute_score(1_000_000.0, 128, 100_000.0);
+        let score = compute_score(1_000_000.0, 128, 100_000.0, None);
         assert!(score > 80.0, "expected high score, got {score}");
     }
 
     #[test]
     fn compute_score_moderate_values() {
-        let score = compute_score(1_000.0, 10, 500.0);
+        let score = compute_score(1_000.0, 10, 500.0, None);
         assert!(score > 20.0 && score < 80.0, "got {score}");
+    }
+
+    #[test]
+    fn compute_score_with_win_rate_boosts() {
+        let without = compute_score(1_000.0, 10, 500.0, None);
+        let with_high = compute_score(1_000.0, 10, 500.0, Some(0.8));
+        assert!(with_high > without, "win rate should boost: {with_high} vs {without}");
+    }
+
+    #[test]
+    fn compute_score_low_win_rate_penalizes() {
+        let high_wr = compute_score(1_000.0, 10, 500.0, Some(0.9));
+        let low_wr = compute_score(1_000.0, 10, 500.0, Some(0.2));
+        assert!(high_wr > low_wr, "high WR should beat low: {high_wr} vs {low_wr}");
     }
 
     #[test]

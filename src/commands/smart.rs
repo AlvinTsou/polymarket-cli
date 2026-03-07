@@ -9,8 +9,9 @@ use crate::output::OutputFormat;
 use crate::output::smart::{
     print_discover_results, print_profile, print_scan_result, print_signals, print_wallet_list,
 };
+use crate::smart::AggregatedSignal;
 use crate::smart::tracker::PositionChange;
-use crate::smart::{SmartScore, WatchedWallet, scorer, signals, store, tracker};
+use crate::smart::{Signal, SmartScore, WatchedWallet, scorer, signals, store, tracker};
 
 #[derive(Args)]
 pub struct SmartArgs {
@@ -63,6 +64,10 @@ pub enum SmartCommand {
         /// Scan only this wallet instead of the full watch list
         #[arg(long)]
         wallet: Option<String>,
+
+        /// Send macOS notification when signals are detected
+        #[arg(long)]
+        notify: bool,
     },
 
     /// View recent signals
@@ -96,7 +101,9 @@ pub async fn execute(
         SmartCommand::Unwatch { address } => cmd_unwatch(&address, &output),
         SmartCommand::List => cmd_list(&output),
 
-        SmartCommand::Scan { wallet } => cmd_scan(client, wallet.as_deref(), &output).await,
+        SmartCommand::Scan { wallet, notify } => {
+            cmd_scan(client, wallet.as_deref(), notify, &output).await
+        }
 
         SmartCommand::Signals { limit } => cmd_signals(limit, &output),
 
@@ -224,6 +231,7 @@ fn cmd_list(output: &OutputFormat) -> Result<()> {
 async fn cmd_scan(
     client: &data::Client,
     single_wallet: Option<&str>,
+    notify: bool,
     output: &OutputFormat,
 ) -> Result<()> {
     let wallets = match single_wallet {
@@ -274,7 +282,15 @@ async fn cmd_scan(
     // Persist signals
     store::append_signals(&all_signals)?;
 
-    print_scan_result(&scan_summaries, &all_signals, output)
+    // Aggregate: detect multiple wallets converging on same market
+    let aggregated = signals::aggregate_signals(&all_signals);
+
+    // macOS notification
+    if notify && !all_signals.is_empty() {
+        send_macos_notification(&all_signals, &aggregated);
+    }
+
+    print_scan_result(&scan_summaries, &all_signals, &aggregated, output)
 }
 
 fn cmd_signals(limit: usize, output: &OutputFormat) -> Result<()> {
@@ -295,6 +311,35 @@ async fn cmd_profile(
         .any(|w| w.address.to_lowercase() == address.to_lowercase());
 
     print_profile(&score, is_watched, output)
+}
+
+fn send_macos_notification(signals: &[Signal], aggregated: &[AggregatedSignal]) {
+    let title = format!("Polymarket: {} signal(s) detected", signals.len());
+    let body = if aggregated.is_empty() {
+        let sig = &signals[0];
+        format!(
+            "{} {} — {} [{}]",
+            sig.signal_type, sig.confidence, sig.market_title, sig.outcome
+        )
+    } else {
+        let agg = &aggregated[0];
+        format!(
+            "{} wallets {} on {} [{}]",
+            agg.wallet_count, agg.direction, agg.market_title, agg.outcome
+        )
+    };
+
+    // Escape quotes for osascript
+    let title = title.replace('"', r#"\""#);
+    let body = body.replace('"', r#"\""#);
+
+    let script = format!(
+        r#"display notification "{body}" with title "{title}" sound name "Glass""#
+    );
+    let _ = std::process::Command::new("osascript")
+        .arg("-e")
+        .arg(&script)
+        .output();
 }
 
 /// Summary of a single wallet scan (used for output rendering).

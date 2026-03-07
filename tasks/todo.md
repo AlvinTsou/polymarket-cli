@@ -27,14 +27,14 @@
   - [x] `polymarket smart signals` — 正常顯示信號（目前無信號）
   - [x] `polymarket smart profile 0x...` — 正常顯示錢包概況
   - [x] `polymarket smart unwatch 0x...` — 成功移除追蹤
-- [ ] Git commit
+- [x] Git commit — `2a4b692` on `feature/smart-money`
 
 ## Sprint 2：跟單信號強化
 
-- [ ] 信號聚合：多錢包同方向偵測（Low/Medium/High）
-- [ ] `polymarket smart scan --notify` macOS 本地通知
+- [x] 信號聚合：多錢包同方向偵測（2 wallets=MED, 3+=HIGH）
+- [x] `polymarket smart scan --notify` macOS 本地通知
 - [ ] Telegram Bot 推送整合
-- [ ] 改善評分模型：加入勝率（closed positions 分析）
+- [x] 改善評分模型：加入勝率（closed positions 分析, 25% weight）
 
 ## Sprint 3：跟單執行
 
