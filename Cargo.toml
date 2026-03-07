@@ -26,6 +26,12 @@ anyhow = "1"
 chrono = "0.4"
 dirs = "6"
 rustyline = "15"
+rusqlite = { version = "0.32", features = ["bundled"] }
+teloxide = { version = "0.13", features = ["macros"] }
+lettre = { version = "0.11", default-features = false, features = ["tokio1-rustls-tls", "smtp-transport", "builder"] }
+reqwest = { version = "0.12", features = ["rustls-tls", "json"] }
+scraper = "0.22"
+url = "2"
 
 [dev-dependencies]
 assert_cmd = "2"

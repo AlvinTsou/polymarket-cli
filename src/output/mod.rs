@@ -1,9 +1,11 @@
 pub mod approve;
+pub mod article;
 pub mod bridge;
 pub mod clob;
 pub mod comments;
 pub mod ctf;
 pub mod data;
+pub mod digest;
 pub mod events;
 pub mod markets;
 pub mod profiles;

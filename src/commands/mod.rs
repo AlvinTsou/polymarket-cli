@@ -1,11 +1,14 @@
 use polymarket_client_sdk::types::{Address, B256};
 
 pub mod approve;
+pub mod article;
+pub mod bot;
 pub mod bridge;
 pub mod clob;
 pub mod comments;
 pub mod ctf;
 pub mod data;
+pub mod digest;
 pub mod events;
 pub mod markets;
 pub mod profiles;

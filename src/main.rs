@@ -1,8 +1,11 @@
 mod auth;
 mod commands;
 mod config;
+mod gemini;
+mod notify;
 mod output;
 mod shell;
+mod storage;
 
 use std::process::ExitCode;
 
@@ -60,6 +63,12 @@ enum Commands {
     Bridge(commands::bridge::BridgeArgs),
     /// Manage wallet and authentication
     Wallet(commands::wallet::WalletArgs),
+    /// Manage articles for daily digest
+    Article(commands::article::ArticleArgs),
+    /// Generate and send daily digest
+    Digest(commands::digest::DigestArgs),
+    /// Telegram bot for article ingestion
+    Bot(commands::bot::BotArgs),
     /// Check API health status
     Status,
     /// Update to the latest version
@@ -184,6 +193,9 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         Commands::Wallet(args) => {
             commands::wallet::execute(args, &cli.output, cli.private_key.as_deref())
         }
+        Commands::Article(args) => commands::article::execute(args, cli.output).await,
+        Commands::Digest(args) => commands::digest::execute(args, cli.output).await,
+        Commands::Bot(args) => commands::bot::execute(args).await,
         Commands::Upgrade => commands::upgrade::execute(),
         Commands::Status => {
             let status = polymarket_client_sdk::gamma::Client::default()

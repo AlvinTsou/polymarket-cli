@@ -17,6 +17,24 @@ pub struct Config {
     pub chain_id: u64,
     #[serde(default = "default_signature_type")]
     pub signature_type: String,
+
+    // Digest feature fields (all optional, existing configs remain valid)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gemini_api_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub telegram_bot_token: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub telegram_chat_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub smtp_host: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub smtp_username: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub smtp_password: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub email_from: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub email_to: Option<String>,
 }
 
 fn default_signature_type() -> String {
@@ -94,11 +112,12 @@ pub fn save_wallet(key: &str, chain_id: u64, signature_type: &str) -> Result<()>
         fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))?;
     }
 
-    let config = Config {
-        private_key: key.to_string(),
-        chain_id,
-        signature_type: signature_type.to_string(),
-    };
+    // Load existing config to preserve digest-related fields, or create fresh
+    let mut config = load_config_or_default();
+    config.private_key = key.to_string();
+    config.chain_id = chain_id;
+    config.signature_type = signature_type.to_string();
+
     let json = serde_json::to_string_pretty(&config)?;
     let path = config_path()?;
 
@@ -123,6 +142,58 @@ pub fn save_wallet(key: &str, chain_id: u64, signature_type: &str) -> Result<()>
     }
 
     Ok(())
+}
+
+pub fn save_config(config: &Config) -> Result<()> {
+    let dir = config_dir()?;
+    fs::create_dir_all(&dir).context("Failed to create config directory")?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))?;
+    }
+
+    let json = serde_json::to_string_pretty(config)?;
+    let path = config_path()?;
+
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&path)
+            .context("Failed to create config file")?;
+        file.write_all(json.as_bytes())
+            .context("Failed to write config file")?;
+    }
+
+    #[cfg(not(unix))]
+    {
+        fs::write(&path, &json).context("Failed to write config file")?;
+    }
+
+    Ok(())
+}
+
+pub fn load_config_or_default() -> Config {
+    load_config().unwrap_or(Config {
+        private_key: String::new(),
+        chain_id: 137,
+        signature_type: default_signature_type(),
+        gemini_api_key: None,
+        telegram_bot_token: None,
+        telegram_chat_id: None,
+        smtp_host: None,
+        smtp_username: None,
+        smtp_password: None,
+        email_from: None,
+        email_to: None,
+    })
 }
 
 /// Priority: CLI flag > env var > config file.
