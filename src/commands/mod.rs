@@ -10,6 +10,7 @@ pub mod events;
 pub mod markets;
 pub mod profiles;
 pub mod series;
+pub mod smart;
 pub mod setup;
 pub mod sports;
 pub mod tags;
