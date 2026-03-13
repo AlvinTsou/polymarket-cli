@@ -3,6 +3,7 @@ mod commands;
 mod config;
 mod output;
 mod shell;
+mod smart;
 
 use std::process::ExitCode;
 
@@ -60,6 +61,8 @@ enum Commands {
     Bridge(commands::bridge::BridgeArgs),
     /// Manage wallet and authentication
     Wallet(commands::wallet::WalletArgs),
+    /// Smart money tracking: discover, watch, scan, and follow
+    Smart(commands::smart::SmartArgs),
     /// Check API health status
     Status,
     /// Update to the latest version
@@ -178,6 +181,16 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
                 &polymarket_client_sdk::bridge::Client::default(),
                 args,
                 cli.output,
+            )
+            .await
+        }
+        Commands::Smart(args) => {
+            commands::smart::execute(
+                &polymarket_client_sdk::data::Client::default(),
+                args,
+                cli.output,
+                cli.private_key.as_deref(),
+                cli.signature_type.as_deref(),
             )
             .await
         }
