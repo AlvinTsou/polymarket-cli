@@ -4,8 +4,8 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 
 use super::{
-    FollowRecord, OddsAlert, OddsWatch, Signal, SmartScore, TelegramConfig, WalletSnapshot,
-    WatchedWallet,
+    FollowRecord, MonitorConfig, OddsAlert, OddsWatch, Signal, SmartScore, TelegramConfig,
+    WalletSnapshot, WatchedWallet,
 };
 
 fn smart_dir() -> Result<PathBuf> {
@@ -332,6 +332,24 @@ pub fn append_odds_alerts(alerts: &[OddsAlert]) -> Result<()> {
     for alert in alerts {
         writeln!(file, "{}", serde_json::to_string(alert)?)?;
     }
+    Ok(())
+}
+
+// ── Monitor config ───────────────────────────────────────────────
+
+pub fn load_monitor_config() -> Result<Option<MonitorConfig>> {
+    let path = smart_dir()?.join("monitor.json");
+    if !path.exists() {
+        return Ok(None);
+    }
+    let data = fs::read_to_string(&path)?;
+    Ok(Some(serde_json::from_str(&data)?))
+}
+
+pub fn save_monitor_config(config: &MonitorConfig) -> Result<()> {
+    let path = smart_dir()?.join("monitor.json");
+    let json = serde_json::to_string_pretty(config)?;
+    fs::write(&path, json)?;
     Ok(())
 }
 

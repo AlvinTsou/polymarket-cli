@@ -1,99 +1,154 @@
-# Sprint 6: Precise P&L Tracking + Trade History Visualization
+# Sprint 7: Real-time Monitor with Condition Triggers + Paper Trading
 
-## Problem
+## Goal
 
-Current implementation has these gaps:
-1. `FollowRecord.price` is signal price, not actual fill price — slippage invisible
-2. No realized vs unrealized P&L — all trades treated as open
-3. No position closure detection — can't tell when a trade was exited
-4. No time-based filtering on `roi`/`history` — everything lumped together
-5. Dashboard is static tables only — no charts, no timeline, no visual P&L curve
-6. No per-wallet or per-market performance breakdown
+A long-running `smart monitor` command that:
+1. Continuously scans wallets + odds at configurable intervals
+2. Evaluates signals against user-defined trigger conditions
+3. Automatically places paper trades (dry-run) when conditions are met
+4. Sends notifications on trigger + paper trade
+5. Persists monitor config for easy restart
 
-## Design
+## CLI Interface
 
-### Step 1: Extend `FollowRecord` (mod.rs + store.rs)
+```
+polymarket smart monitor \
+  --interval 3m \
+  --min-confidence med \
+  --min-wallets 2 \
+  --market-include "election,AI,crypto" \
+  --market-exclude "sports" \
+  --odds-threshold 5.0 \
+  --paper-trade \
+  --amount 10 \
+  --max-per-day 100 \
+  --notify \
+  --save
+```
 
-Add fields to `FollowRecord` (backward-compatible via `Option` + `#[serde(default)]`):
+### Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--interval` | `5m` | Scan interval (e.g. `1m`, `3m`, `10m`) |
+| `--min-confidence` | `med` | Minimum signal confidence to trigger |
+| `--min-wallets` | `1` | Minimum wallet convergence count |
+| `--market-include` | (none) | Comma-separated keywords, trigger only if market title matches any |
+| `--market-exclude` | (none) | Comma-separated keywords, skip if market title matches any |
+| `--odds-threshold` | `0` | Also trigger on odds change >= this % (0 = disabled) |
+| `--paper-trade` | `false` | Auto-create dry-run FollowRecords on trigger |
+| `--amount` | `10` | USDC per paper trade |
+| `--max-per-day` | `50` | Daily paper trade spending cap |
+| `--notify` | `false` | macOS + Telegram notifications on trigger |
+| `--save` | `false` | Persist these settings to monitor.json for next run |
+| `--load` | `false` | Load saved settings from monitor.json |
+
+## Architecture
+
+```
+cmd_monitor()
+  │
+  ├─ Load/parse MonitorConfig
+  ├─ Print config summary
+  │
+  └─ Loop (tokio::time::interval)
+       │
+       ├─ scan_wallets() ──→ Vec<Signal>
+       ├─ scan_odds()     ──→ Vec<OddsAlert>
+       │
+       ├─ evaluate_triggers(signals, alerts, config)
+       │    ├─ Filter by min_confidence
+       │    ├─ Filter by min_wallets (aggregation check)
+       │    ├─ Filter by market_include / market_exclude
+       │    ├─ Check odds_threshold alerts
+       │    └─ Return Vec<TriggerEvent>
+       │
+       ├─ If paper_trade && triggers not empty:
+       │    ├─ Check daily spend cap
+       │    ├─ Create dry-run FollowRecords (reuse existing logic)
+       │    └─ Close positions if ClosePosition detected
+       │
+       ├─ If notify && triggers not empty:
+       │    ├─ macOS notification
+       │    └─ Telegram with trigger summary + paper trade details
+       │
+       └─ Print cycle summary to stdout
+            "Cycle #N: 3 signals, 1 trigger, 1 paper trade | next scan in 3m"
+```
+
+## Data Types
 
 ```rust
-pub struct FollowRecord {
-    // ... existing fields ...
-    pub fill_price: Option<f64>,       // actual execution price (from order response)
-    pub status: Option<TradeStatus>,   // Open | Closed | Expired
-    pub closed_at: Option<DateTime<Utc>>,
-    pub exit_price: Option<f64>,
-    pub realized_pnl: Option<f64>,
-    pub position_id: Option<String>,   // groups entry+exit of same position
+// ~/.config/polymarket/smart/monitor.json
+struct MonitorConfig {
+    interval_secs: u64,
+    min_confidence: SignalConfidence,
+    min_wallets: u32,
+    market_include: Vec<String>,
+    market_exclude: Vec<String>,
+    odds_threshold: f64,
+    paper_trade: bool,
+    amount: f64,
+    max_per_day: f64,
+    notify: bool,
 }
 
-pub enum TradeStatus { Open, Closed, Expired }
+struct TriggerEvent {
+    trigger_type: TriggerType,  // Signal | OddsAlert | Aggregated
+    confidence: SignalConfidence,
+    market_title: String,
+    outcome: String,
+    direction: SignalDirection,
+    price: f64,
+    wallet_count: u32,
+    reason: String,  // "HIGH confidence from whale_01" or "3 wallets converge on YES"
+}
+
+enum TriggerType {
+    Signal,
+    Aggregated,
+    OddsAlert,
+}
 ```
 
-Old JSONL records deserialize fine — new fields default to `None`.
+## Implementation Steps
 
-### Step 2: Capture fill price (commands/smart.rs)
+### Step 1: Add tokio `time` + `net` features to Cargo.toml
+- `tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "net"] }`
+- `net` already implicitly available from dashboard, but explicit is better
 
-In `cmd_follow()` and `cmd_auto_follow()`, after `place_follow_order()` returns the order response, extract actual fill price and store it in `fill_price`. For dry-run, `fill_price = None`.
+### Step 2: MonitorConfig type + store
+- Add `MonitorConfig` to `mod.rs`
+- Add `load_monitor_config()` / `save_monitor_config()` to `store.rs`
 
-### Step 3: Position closure detection (smart/tracker.rs → commands/smart.rs)
+### Step 3: Parse interval duration
+- Helper to parse "1m", "3m", "5m", "30s" etc into Duration
 
-During `cmd_scan()`, when a `ClosePosition` or `DecreasePosition` change is detected:
-- Find matching open `FollowRecord` by `(condition_id, outcome, side=BUY)`
-- Update its `status` to `Closed`, set `closed_at`, `exit_price`, calculate `realized_pnl`
-- Store via new `update_follow_record()` in store.rs (rewrite JSONL)
+### Step 4: TriggerEvent + evaluate_triggers()
+- Core rules engine: filter signals by config conditions
+- Check aggregated signals for min_wallets
+- Check odds alerts for threshold
 
-### Step 4: Enhanced `smart roi` command
+### Step 5: CLI subcommand definition
+- Add `Monitor { ... }` variant to `SmartCommand`
+- Wire up in `execute()`
 
-```
-polymarket smart roi [--wallet ADDR] [--market KEYWORD] [--period day|week|month|all] [--status open|closed|all]
-```
+### Step 6: cmd_monitor() implementation
+- The main loop using `tokio::time::interval`
+- Reuses `tracker::scan_wallet`, `signals::generate_signals`, `odds::scan_odds`
+- Paper trade via existing `store::append_follow_record` with dry_run=true
+- Closure detection via `store::close_follow_position`
+- Graceful Ctrl+C handling via `tokio::signal::ctrl_c`
 
-- Separate realized (closed) vs unrealized (open) P&L in summary
-- Group by wallet or market when filtered
-- Show win rate for closed trades only (accurate)
+### Step 7: Notification formatting
+- Build monitor-specific Telegram message with trigger reasons
+- macOS notification with summary
 
-### Step 5: Enhanced `smart history` command
-
-```
-polymarket smart history [--period day|week|month|all] [--status open|closed] [--export json]
-```
-
-### Step 6: Trade History Visualization (HTML dashboard)
-
-Enhance `smart report` to include:
-
-1. **Equity Curve** — cumulative P&L over time (SVG line chart, inline, no JS deps)
-2. **Trade Timeline** — scatter plot of entries/exits on time axis, colored by win/loss
-3. **Summary Cards** — realized PnL, unrealized PnL, win rate, avg hold time, best/worst trade
-4. **Per-Wallet Breakdown** — table with each wallet's follow performance
-5. **Per-Market Breakdown** — which markets were most profitable
-
-All rendered as inline SVG in the same dark-theme HTML — no external JS libraries needed.
-
-### Data flow
-
-```
-scan → detect ClosePosition → match open FollowRecord → close it (realized PnL)
-                                                      ↓
-roi/report reads follows.jsonl → splits open/closed → calculates metrics → renders
-```
-
-## Implementation Order
-
-1. Types + serde compat (mod.rs) — no breaking changes
-2. Store update function (store.rs) — JSONL rewrite for closure updates
-3. Fill price capture (commands/smart.rs follow/auto-follow)
-4. Closure detection logic (commands/smart.rs scan)
-5. Enhanced roi command with filters
-6. Enhanced history command with filters
-7. SVG chart generation helpers
-8. Dashboard overhaul (report command)
-9. Compile + test
-10. Manual verification
+### Step 8: Build + Test + launchd plist
 
 ## Non-goals
 
-- Real-time price queries (would need websocket, out of scope)
-- Multi-leg position tracking (increase→increase→close as one position) — keep it simple: 1 entry = 1 record
-- External charting libraries — all inline SVG
+- Web frontend (dashboard already exists)
+- VPS deployment scripts (user can tmux/launchd)
+- Real order execution (paper-trade only in monitor mode)
+- WebSocket streaming (polling is simpler and sufficient for 1-5m intervals)

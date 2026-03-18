@@ -247,6 +247,74 @@ pub struct SmartScore {
     pub updated_at: DateTime<Utc>,
 }
 
+// ── Monitor ─────────────────────────────────────────────────────
+
+/// Configuration for the real-time monitor daemon.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct MonitorConfig {
+    pub interval_secs: u64,
+    pub min_confidence: SignalConfidence,
+    pub min_wallets: u32,
+    pub market_include: Vec<String>,
+    pub market_exclude: Vec<String>,
+    pub odds_threshold: f64,
+    pub paper_trade: bool,
+    pub amount: f64,
+    pub max_per_day: f64,
+    pub notify: bool,
+}
+
+impl Default for MonitorConfig {
+    fn default() -> Self {
+        Self {
+            interval_secs: 300, // 5m
+            min_confidence: SignalConfidence::Medium,
+            min_wallets: 1,
+            market_include: Vec::new(),
+            market_exclude: Vec::new(),
+            odds_threshold: 0.0,
+            paper_trade: false,
+            amount: 10.0,
+            max_per_day: 50.0,
+            notify: false,
+        }
+    }
+}
+
+/// What caused a trigger.
+#[derive(Clone, Debug)]
+pub enum TriggerType {
+    Signal,
+    Aggregated,
+    OddsAlert,
+}
+
+impl std::fmt::Display for TriggerType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Signal => write!(f, "SIGNAL"),
+            Self::Aggregated => write!(f, "AGGREGATED"),
+            Self::OddsAlert => write!(f, "ODDS"),
+        }
+    }
+}
+
+/// A trigger event that passed all filter conditions.
+#[derive(Clone, Debug)]
+pub struct TriggerEvent {
+    pub trigger_type: TriggerType,
+    pub confidence: SignalConfidence,
+    pub market_title: String,
+    pub outcome: String,
+    pub direction: SignalDirection,
+    pub price: f64,
+    pub wallet_count: u32,
+    pub reason: String,
+    pub condition_id: String,
+    pub asset: String,
+    pub signal_id: String,
+}
+
 // ── Odds Monitoring ─────────────────────────────────────────────
 
 /// A market being monitored for price changes.

@@ -1,57 +1,48 @@
 # PMCC Smart Money System — TODO
 
-## Sprint 1-5: COMPLETE (see git history)
+## Sprint 1-6: COMPLETE (see git history)
 
-## Sprint 6：精確損益追蹤 + 交易歷史視覺化
+## Sprint 7：即時監控 + 條件觸發 + Paper Trading
 
-### Step 1: Types + Serde Compat
-- [x] Add `TradeStatus` enum to `mod.rs`
-- [x] Extend `FollowRecord` with `fill_price`, `status`, `closed_at`, `exit_price`, `realized_pnl`, `position_id`
-- [x] All new fields `Option` + `#[serde(default)]` for backward compat
-- [x] Add `effective_entry()` and `is_open()` helper methods
+### Step 1: Cargo.toml — tokio features
+- [x] Add `time`, `net`, `signal`, `io-util` to tokio features
 
-### Step 2: Store Update Function
-- [x] Add `save_follow_records()` to `store.rs` — rewrite JSONL
-- [x] Add `close_follow_position()` — find + close matching open record
+### Step 2: MonitorConfig type + store
+- [x] `MonitorConfig` struct in `mod.rs` with all fields + Default
+- [x] `load_monitor_config()` / `save_monitor_config()` in `store.rs`
 
-### Step 3: Fill Price Capture
-- [x] In `cmd_follow()`: store `fill_price`, `status`, `position_id` in new FollowRecord
-- [x] In `cmd_auto_follow()`: same treatment
+### Step 3: Duration parser
+- [x] `parse_duration()` — supports `30s`, `3m`, `1h` format
 
-### Step 4: Position Closure Detection
-- [x] In `cmd_scan()`: when ClosePosition detected, call `close_follow_position()`
-- [x] Auto-calculate `realized_pnl` on closure
+### Step 4: TriggerEvent + evaluate_triggers()
+- [x] `TriggerEvent` and `TriggerType` types in `mod.rs`
+- [x] `evaluate_triggers()` — filters by confidence, wallets, market keywords, odds threshold
+- [x] Aggregated signal support (multi-wallet convergence)
+- [x] Dedup: aggregated triggers skip covered individual signals
 
-### Step 5: Enhanced `smart roi`
-- [x] Add `--wallet`, `--market`, `--period`, `--status` flags
-- [x] Split display: realized PnL (closed) vs unrealized PnL (open)
-- [x] Win rate calculated from closed trades only
-- [x] Summary footer with all metrics
+### Step 5: CLI subcommand
+- [x] Add `Monitor { ... }` to `SmartCommand` with 12 flags
+- [x] Wire in `execute()` dispatch
 
-### Step 6: Enhanced `smart history`
-- [x] Add `--period`, `--status` flags
-- [x] Show status column (OPEN/CLOSED)
-- [x] Show exit price + realized PnL for closed trades
-- [x] Table format with tabled crate
+### Step 6: cmd_monitor() loop
+- [x] tokio::time::interval loop with configurable duration
+- [x] Scan wallets each cycle, generate signals, aggregate
+- [x] Scan odds if threshold > 0
+- [x] Evaluate triggers against config rules
+- [x] Paper trade on trigger (dry-run FollowRecord with position_id)
+- [x] Close positions on ClosePosition detection
+- [x] Daily spend cap enforcement
+- [x] Ctrl+C graceful shutdown via tokio::signal
+- [x] Cycle summary line to stderr
 
-### Step 7: SVG Chart Helpers
-- [x] Equity curve generator (cumulative PnL line chart, inline SVG)
-- [x] Trade timeline scatter (entries/exits, win=green, loss=red, size=magnitude)
-- [x] Responsive dark-theme styling matching existing dashboard
+### Step 7: Notification formatting
+- [x] `build_monitor_notification()` for Telegram (trigger type + reason + paper count)
+- [x] macOS osascript notification with Glass sound
+- [x] `--save` / `--load` config persistence
 
-### Step 8: Dashboard Overhaul
-- [x] Add equity curve to report
-- [x] Add trade timeline scatter to report
-- [x] Add summary cards: realized PnL, unrealized PnL, win rate, best/worst trade
-- [x] Add per-market performance breakdown table
-
-### Step 9: Build + Test
-- [x] `cargo check` — compile pass (4 warnings, all pre-existing)
+### Step 8: Build + Test
+- [x] `cargo check` pass (5 warnings, all pre-existing or trivial)
 - [x] `cargo test` — 108 unit + 49 integration = 157 passed
-- [x] Verify old follows.jsonl backward compat (serde(default))
 - [x] Release binary built
-
-### Step 10: Manual Verification
-- [x] `polymarket smart roi --help` — shows new flags
-- [x] `polymarket smart history --help` — shows new flags
-- [ ] Live testing with actual follows data (user to verify)
+- [x] CLI help verified
+- [ ] Live test (user to run `smart monitor --interval 30s --notify --paper-trade`)

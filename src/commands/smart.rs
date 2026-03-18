@@ -185,6 +185,57 @@ pub enum SmartCommand {
         #[command(subcommand)]
         command: OddsCommand,
     },
+
+    /// Real-time monitor: continuous scan + condition triggers + paper trading
+    Monitor {
+        /// Scan interval (e.g. "30s", "1m", "3m", "5m")
+        #[arg(long, default_value = "5m")]
+        interval: String,
+
+        /// Minimum signal confidence: low, med, high
+        #[arg(long, default_value = "med")]
+        min_confidence: String,
+
+        /// Minimum wallet convergence count to trigger
+        #[arg(long, default_value = "1")]
+        min_wallets: u32,
+
+        /// Only trigger for markets matching these keywords (comma-separated)
+        #[arg(long)]
+        market_include: Option<String>,
+
+        /// Skip markets matching these keywords (comma-separated)
+        #[arg(long)]
+        market_exclude: Option<String>,
+
+        /// Also trigger on odds changes >= this percent (0 = disabled)
+        #[arg(long, default_value = "0")]
+        odds_threshold: f64,
+
+        /// Auto paper-trade (dry-run) on trigger
+        #[arg(long)]
+        paper_trade: bool,
+
+        /// USDC amount per paper trade
+        #[arg(long, default_value = "10")]
+        amount: f64,
+
+        /// Max USDC per day for paper trades
+        #[arg(long, default_value = "50")]
+        max_per_day: f64,
+
+        /// Send macOS + Telegram notifications on trigger
+        #[arg(long)]
+        notify: bool,
+
+        /// Save these settings for future --load
+        #[arg(long)]
+        save: bool,
+
+        /// Load saved settings from monitor.json
+        #[arg(long)]
+        load: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -316,6 +367,29 @@ pub async fn execute(
         SmartCommand::Telegram { command } => cmd_telegram(command, &output).await,
 
         SmartCommand::Odds { command } => cmd_odds(command, &output).await,
+
+        SmartCommand::Monitor {
+            interval,
+            min_confidence,
+            min_wallets,
+            market_include,
+            market_exclude,
+            odds_threshold,
+            paper_trade,
+            amount,
+            max_per_day,
+            notify,
+            save,
+            load,
+        } => {
+            cmd_monitor(
+                client, &interval, &min_confidence, min_wallets,
+                market_include.as_deref(), market_exclude.as_deref(),
+                odds_threshold, paper_trade, amount, max_per_day,
+                notify, save, load, &output,
+            )
+            .await
+        }
     }
 }
 
@@ -1658,6 +1732,364 @@ tr:hover td{{background:#111827aa}}
             )
         },
     )
+}
+
+// ── Monitor ──────────────────────────────────────────────────────
+
+fn parse_duration(s: &str) -> Result<std::time::Duration> {
+    let s = s.trim().to_lowercase();
+    if let Some(n) = s.strip_suffix('s') {
+        let secs: u64 = n.parse().map_err(|_| anyhow::anyhow!("Invalid duration: {s}"))?;
+        return Ok(std::time::Duration::from_secs(secs));
+    }
+    if let Some(n) = s.strip_suffix('m') {
+        let mins: u64 = n.parse().map_err(|_| anyhow::anyhow!("Invalid duration: {s}"))?;
+        return Ok(std::time::Duration::from_secs(mins * 60));
+    }
+    if let Some(n) = s.strip_suffix('h') {
+        let hours: u64 = n.parse().map_err(|_| anyhow::anyhow!("Invalid duration: {s}"))?;
+        return Ok(std::time::Duration::from_secs(hours * 3600));
+    }
+    // Fallback: try as seconds
+    let secs: u64 = s.parse().map_err(|_| anyhow::anyhow!("Invalid duration: {s}. Use e.g. 30s, 3m, 1h"))?;
+    Ok(std::time::Duration::from_secs(secs))
+}
+
+fn split_keywords(s: Option<&str>) -> Vec<String> {
+    s.map(|v| v.split(',').map(|k| k.trim().to_lowercase()).filter(|k| !k.is_empty()).collect())
+        .unwrap_or_default()
+}
+
+fn evaluate_triggers(
+    all_signals: &[Signal],
+    aggregated: &[AggregatedSignal],
+    odds_alerts: &[crate::smart::OddsAlert],
+    config: &crate::smart::MonitorConfig,
+) -> Vec<crate::smart::TriggerEvent> {
+    use crate::smart::{TriggerEvent, TriggerType};
+
+    let market_include = &config.market_include;
+    let market_exclude = &config.market_exclude;
+
+    let matches_include = |title: &str| -> bool {
+        if market_include.is_empty() { return true; }
+        let lower = title.to_lowercase();
+        market_include.iter().any(|kw| lower.contains(kw))
+    };
+    let matches_exclude = |title: &str| -> bool {
+        if market_exclude.is_empty() { return false; }
+        let lower = title.to_lowercase();
+        market_exclude.iter().any(|kw| lower.contains(kw))
+    };
+
+    let mut triggers = Vec::new();
+
+    // Check aggregated signals (multi-wallet convergence)
+    if config.min_wallets > 1 {
+        for agg in aggregated {
+            if (agg.wallet_count as u32) < config.min_wallets { continue; }
+            if confidence_rank(&agg.confidence) < confidence_rank(&config.min_confidence) { continue; }
+            if !matches_include(&agg.market_title) || matches_exclude(&agg.market_title) { continue; }
+
+            let first_sig = agg.signals.first();
+            triggers.push(TriggerEvent {
+                trigger_type: TriggerType::Aggregated,
+                confidence: agg.confidence.clone(),
+                market_title: agg.market_title.clone(),
+                outcome: agg.outcome.clone(),
+                direction: agg.direction.clone(),
+                price: agg.avg_price,
+                wallet_count: agg.wallet_count as u32,
+                reason: format!("{} wallets converge on {} {}", agg.wallet_count, agg.direction, agg.outcome),
+                condition_id: agg.condition_id.clone(),
+                asset: first_sig.map(|s| s.asset.clone()).unwrap_or_default(),
+                signal_id: first_sig.map(|s| s.id.clone()).unwrap_or_default(),
+            });
+        }
+    }
+
+    // Check individual signals (if min_wallets <= 1 or as supplement)
+    // Skip signals already covered by aggregated triggers
+    let aggregated_conditions: std::collections::HashSet<String> = triggers.iter().map(|t| t.condition_id.clone()).collect();
+
+    for sig in all_signals {
+        if aggregated_conditions.contains(&sig.condition_id) { continue; }
+        if confidence_rank(&sig.confidence) < confidence_rank(&config.min_confidence) { continue; }
+        if !matches_include(&sig.market_title) || matches_exclude(&sig.market_title) { continue; }
+
+        let tag = sig.wallet_tag.as_deref().unwrap_or(&sig.wallet[..8.min(sig.wallet.len())]);
+        triggers.push(TriggerEvent {
+            trigger_type: TriggerType::Signal,
+            confidence: sig.confidence.clone(),
+            market_title: sig.market_title.clone(),
+            outcome: sig.outcome.clone(),
+            direction: sig.signal_type.direction(),
+            price: sig.price.parse().unwrap_or(0.0),
+            wallet_count: 1,
+            reason: format!("{} {} from {}", sig.confidence, sig.signal_type, tag),
+            condition_id: sig.condition_id.clone(),
+            asset: sig.asset.clone(),
+            signal_id: sig.id.clone(),
+        });
+    }
+
+    // Check odds alerts
+    if config.odds_threshold > 0.0 {
+        for alert in odds_alerts {
+            if alert.change_pct.abs() < config.odds_threshold { continue; }
+            if !matches_include(&alert.label) || matches_exclude(&alert.label) { continue; }
+
+            let dir = if alert.change_pct > 0.0 {
+                crate::smart::SignalDirection::Buy
+            } else {
+                crate::smart::SignalDirection::Sell
+            };
+            triggers.push(TriggerEvent {
+                trigger_type: TriggerType::OddsAlert,
+                confidence: crate::smart::SignalConfidence::Medium,
+                market_title: alert.label.clone(),
+                outcome: String::new(),
+                direction: dir,
+                price: alert.current_price,
+                wallet_count: 0,
+                reason: format!("Odds moved {:+.1}% ({:.4} -> {:.4})", alert.change_pct, alert.previous_price, alert.current_price),
+                condition_id: alert.token_id.clone(),
+                asset: alert.token_id.clone(),
+                signal_id: alert.id.clone(),
+            });
+        }
+    }
+
+    triggers
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn cmd_monitor(
+    client: &data::Client,
+    interval_str: &str,
+    min_confidence_str: &str,
+    min_wallets: u32,
+    market_include: Option<&str>,
+    market_exclude: Option<&str>,
+    odds_threshold: f64,
+    paper_trade: bool,
+    amount: f64,
+    max_per_day: f64,
+    notify: bool,
+    save: bool,
+    load: bool,
+    _output: &OutputFormat,
+) -> Result<()> {
+    use crate::smart::{MonitorConfig, TradeStatus};
+
+    // Build or load config
+    let config = if load {
+        store::load_monitor_config()?
+            .ok_or_else(|| anyhow::anyhow!("No saved monitor config. Run with flags first, then --save."))?
+    } else {
+        let interval = parse_duration(interval_str)?;
+        MonitorConfig {
+            interval_secs: interval.as_secs(),
+            min_confidence: parse_confidence(min_confidence_str)?,
+            min_wallets,
+            market_include: split_keywords(market_include),
+            market_exclude: split_keywords(market_exclude),
+            odds_threshold,
+            paper_trade,
+            amount,
+            max_per_day,
+            notify,
+        }
+    };
+
+    if save {
+        store::save_monitor_config(&config)?;
+        println!("Monitor config saved to monitor.json");
+    }
+
+    let interval_dur = std::time::Duration::from_secs(config.interval_secs);
+
+    // Print config summary
+    println!("=== PMCC Monitor ===");
+    println!("  Interval:       {}s", config.interval_secs);
+    println!("  Min confidence: {}", config.min_confidence);
+    println!("  Min wallets:    {}", config.min_wallets);
+    if !config.market_include.is_empty() {
+        println!("  Include:        {}", config.market_include.join(", "));
+    }
+    if !config.market_exclude.is_empty() {
+        println!("  Exclude:        {}", config.market_exclude.join(", "));
+    }
+    if config.odds_threshold > 0.0 {
+        println!("  Odds threshold: {:.1}%", config.odds_threshold);
+    }
+    println!("  Paper trade:    {} (${:.2}/trade, ${:.2}/day max)",
+        if config.paper_trade { "ON" } else { "OFF" }, config.amount, config.max_per_day);
+    println!("  Notifications:  {}", if config.notify { "ON" } else { "OFF" });
+    println!("  Press Ctrl+C to stop.\n");
+
+    let mut cycle = 0u64;
+    let mut interval_timer = tokio::time::interval(interval_dur);
+    interval_timer.tick().await; // first tick is immediate
+
+    loop {
+        tokio::select! {
+            _ = interval_timer.tick() => {
+                cycle += 1;
+                let now = Utc::now().format("%H:%M:%S");
+                eprint!("[{now}] Cycle #{cycle}: scanning... ");
+
+                // Load wallets
+                let wallets = store::load_wallets().unwrap_or_default();
+                if wallets.is_empty() {
+                    eprintln!("no wallets to scan");
+                    continue;
+                }
+
+                // Scan wallets
+                let mut all_signals = Vec::new();
+                let mut scan_errors = 0u32;
+                for wallet in &wallets {
+                    match tracker::scan_wallet(client, &wallet.address).await {
+                        Ok((changes, _snapshot)) => {
+                            let sigs = signals::generate_signals(wallet, &changes);
+                            all_signals.extend(sigs);
+                        }
+                        Err(_) => scan_errors += 1,
+                    }
+                }
+
+                // Persist signals
+                if !all_signals.is_empty() {
+                    let _ = store::append_signals(&all_signals);
+                }
+
+                // Close follow positions on ClosePosition
+                for sig in &all_signals {
+                    if matches!(sig.signal_type, crate::smart::SignalType::ClosePosition) {
+                        let exit_price: f64 = sig.price.parse().unwrap_or(0.0);
+                        if exit_price > 0.0 {
+                            let _ = store::close_follow_position(&sig.condition_id, &sig.outcome, exit_price);
+                        }
+                    }
+                }
+
+                // Aggregate
+                let aggregated = signals::aggregate_signals(&all_signals);
+
+                // Scan odds
+                let odds_alerts = if config.odds_threshold > 0.0 {
+                    let alerts = odds::scan_odds().await.unwrap_or_default();
+                    if !alerts.is_empty() {
+                        let _ = store::append_odds_alerts(&alerts);
+                    }
+                    alerts
+                } else {
+                    Vec::new()
+                };
+
+                // Evaluate triggers
+                let triggers = evaluate_triggers(&all_signals, &aggregated, &odds_alerts, &config);
+
+                // Paper trade
+                let mut paper_count = 0u32;
+                if config.paper_trade && !triggers.is_empty() {
+                    let today_spent = store::today_spend().unwrap_or(0.0);
+                    let mut spent = 0.0f64;
+
+                    for trigger in &triggers {
+                        if matches!(trigger.trigger_type, crate::smart::TriggerType::OddsAlert) {
+                            continue; // don't paper-trade on pure odds alerts
+                        }
+                        if today_spent + spent + config.amount > config.max_per_day {
+                            break;
+                        }
+
+                        let side_str = trigger.direction.to_string();
+                        let pos_id = format!(
+                            "pos_{}_{}",
+                            Utc::now().format("%Y%m%d%H%M%S"),
+                            &trigger.condition_id[..8.min(trigger.condition_id.len())]
+                        );
+                        let record = FollowRecord {
+                            timestamp: Utc::now(),
+                            signal_id: trigger.signal_id.clone(),
+                            market_title: trigger.market_title.clone(),
+                            condition_id: trigger.condition_id.clone(),
+                            asset: trigger.asset.clone(),
+                            outcome: trigger.outcome.clone(),
+                            side: side_str,
+                            amount_usdc: config.amount,
+                            price: trigger.price,
+                            dry_run: true,
+                            order_id: None,
+                            fill_price: None,
+                            status: Some(TradeStatus::Open),
+                            closed_at: None,
+                            exit_price: None,
+                            realized_pnl: None,
+                            position_id: Some(pos_id),
+                        };
+                        let _ = store::append_follow_record(&record);
+                        paper_count += 1;
+                        spent += config.amount;
+                    }
+                }
+
+                // Summary line
+                let err_str = if scan_errors > 0 { format!(", {scan_errors} error(s)") } else { String::new() };
+                let paper_str = if paper_count > 0 { format!(", {paper_count} paper trade(s)") } else { String::new() };
+                eprintln!(
+                    "{} signal(s), {} trigger(s){paper_str}{err_str}",
+                    all_signals.len(), triggers.len()
+                );
+
+                // Notifications
+                if config.notify && !triggers.is_empty() {
+                    let summary = build_monitor_notification(&triggers, paper_count);
+
+                    // macOS
+                    let title = format!("PMCC: {} trigger(s)", triggers.len());
+                    let short = triggers.iter().take(3).map(|t| t.reason.as_str()).collect::<Vec<_>>().join("; ");
+                    let _ = std::process::Command::new("osascript")
+                        .args(["-e", &format!(
+                            "display notification \"{}\" with title \"{}\" sound name \"Glass\"",
+                            short.replace('"', "\\\""), title
+                        )])
+                        .output();
+
+                    // Telegram
+                    if let Ok(Some(tg_config)) = store::load_telegram_config() {
+                        let _ = send_telegram_message(&tg_config, &summary).await;
+                    }
+                }
+            }
+            _ = tokio::signal::ctrl_c() => {
+                println!("\nMonitor stopped. {} cycles completed.", cycle);
+                return Ok(());
+            }
+        }
+    }
+}
+
+fn build_monitor_notification(triggers: &[crate::smart::TriggerEvent], paper_count: u32) -> String {
+    let mut lines = vec![format!("*PMCC Monitor: {} trigger(s)*", triggers.len())];
+
+    for (i, t) in triggers.iter().enumerate() {
+        if i >= 5 { lines.push(format!("_...and {} more_", triggers.len() - 5)); break; }
+        let dir = &t.direction;
+        lines.push(format!(
+            "[{}] {} {} — {} [{}] @ {:.4}",
+            t.trigger_type, t.confidence, dir, t.market_title, t.outcome, t.price
+        ));
+        lines.push(format!("  _{}_", t.reason));
+    }
+
+    if paper_count > 0 {
+        lines.push(format!("\nPaper trades: {paper_count}"));
+    }
+
+    lines.join("\n")
 }
 
 fn html_escape(s: &str) -> String {
