@@ -6,7 +6,7 @@ use tabled::{Table, Tabled};
 use super::{OutputFormat, truncate};
 use crate::commands::smart::ScanSummary;
 use crate::smart::tracker::ChangeType;
-use crate::smart::{AggregatedSignal, Signal, SmartScore, WatchedWallet};
+use crate::smart::{AggregatedSignal, OddsAlert, OddsWatch, Signal, SmartScore, WatchedWallet};
 
 // ── Discover ─────────────────────────────────────────────────────
 
@@ -324,6 +324,98 @@ pub fn print_profile(score: &SmartScore, is_watched: bool, output: &OutputFormat
             });
             super::print_json(&data)?;
         }
+    }
+    Ok(())
+}
+
+// ── Odds list ───────────────────────────────────────────────────
+
+pub fn print_odds_list(watches: &[OddsWatch], output: &OutputFormat) -> Result<()> {
+    match output {
+        OutputFormat::Table => {
+            if watches.is_empty() {
+                println!("No markets being watched. Use `polymarket smart odds watch <token_id>`.");
+                return Ok(());
+            }
+            #[derive(Tabled)]
+            struct Row {
+                #[tabled(rename = "Token ID")]
+                token_id: String,
+                #[tabled(rename = "Label")]
+                label: String,
+                #[tabled(rename = "Threshold")]
+                threshold: String,
+                #[tabled(rename = "Baseline")]
+                baseline: String,
+                #[tabled(rename = "Last Price")]
+                last_price: String,
+                #[tabled(rename = "Last Scan")]
+                last_scan: String,
+            }
+            let rows: Vec<Row> = watches
+                .iter()
+                .map(|w| Row {
+                    token_id: truncate(&w.token_id, 16),
+                    label: truncate(&w.label, 30),
+                    threshold: format!("{:.1}%", w.threshold_pct),
+                    baseline: format!("{:.4}", w.baseline_price),
+                    last_price: format!("{:.4}", w.last_price),
+                    last_scan: w
+                        .last_scanned
+                        .map_or("—".into(), |t| t.format("%m-%d %H:%M").to_string()),
+                })
+                .collect();
+            let table = Table::new(rows).with(Style::rounded()).to_string();
+            println!("{table}");
+        }
+        OutputFormat::Json => super::print_json(&watches)?,
+    }
+    Ok(())
+}
+
+// ── Odds alerts ─────────────────────────────────────────────────
+
+pub fn print_odds_alerts(alerts: &[OddsAlert], output: &OutputFormat) -> Result<()> {
+    match output {
+        OutputFormat::Table => {
+            if alerts.is_empty() {
+                println!("No odds alerts.");
+                return Ok(());
+            }
+            #[derive(Tabled)]
+            struct Row {
+                #[tabled(rename = "Time")]
+                time: String,
+                #[tabled(rename = "Market")]
+                label: String,
+                #[tabled(rename = "Change")]
+                change: String,
+                #[tabled(rename = "From")]
+                from: String,
+                #[tabled(rename = "To")]
+                to: String,
+                #[tabled(rename = "Baseline")]
+                baseline: String,
+            }
+            let rows: Vec<Row> = alerts
+                .iter()
+                .map(|a| {
+                    let dir = if a.change_pct > 0.0 { "+" } else { "" };
+                    Row {
+                        time: a.timestamp.format("%m-%d %H:%M").to_string(),
+                        label: truncate(&a.label, 30),
+                        change: format!("{dir}{:.1}%", a.change_pct),
+                        from: format!("{:.4}", a.previous_price),
+                        to: format!("{:.4}", a.current_price),
+                        baseline: format!("{:.4}", a.baseline_price),
+                    }
+                })
+                .collect();
+            println!("--- Odds Alerts ({}) ---", alerts.len());
+            let table = Table::new(rows).with(Style::rounded()).to_string();
+            println!("{table}");
+        }
+        OutputFormat::Json => super::print_json(&alerts)?,
     }
     Ok(())
 }

@@ -39,12 +39,17 @@ const CDN_MAX_AGE = 300; // 5 min
 async function fetchTrendingMarkets(limit = 20): Promise<GammaMarket[]> {
   const url = `${GAMMA_API}/markets?active=true&closed=false&limit=${limit}&order=volume_num&ascending=false`;
   const resp = await fetch(url, {
+    signal: AbortSignal.timeout(8000),
     headers: { Accept: "application/json" },
   });
   if (!resp.ok) {
     throw new Error(`Gamma API returned ${resp.status}`);
   }
-  return resp.json();
+  const data = await resp.json();
+  if (!Array.isArray(data)) {
+    throw new Error("Gamma API: unexpected response shape");
+  }
+  return data as GammaMarket[];
 }
 
 // ─── Transform raw market data ───
@@ -208,6 +213,8 @@ async function handleFetch(request: Request, env: Env): Promise<Response> {
     headers: {
       "Content-Type": "text/html;charset=utf-8",
       "Cache-Control": `public, max-age=${CDN_MAX_AGE}`,
+      "X-Content-Type-Options": "nosniff",
+      "X-Frame-Options": "DENY",
     },
   });
 }
@@ -220,6 +227,10 @@ export default {
   },
 
   async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
-    ctx.waitUntil(handleScheduled(env));
+    ctx.waitUntil(
+      handleScheduled(env).catch((err) => {
+        console.error("handleScheduled failed:", err instanceof Error ? err.message : String(err));
+      }),
+    );
   },
 };
