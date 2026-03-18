@@ -1,3 +1,4 @@
+pub mod odds;
 pub mod scorer;
 pub mod signals;
 pub mod store;
@@ -165,6 +166,30 @@ impl Default for FollowConfig {
     }
 }
 
+/// Status of a follow trade.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TradeStatus {
+    Open,
+    Closed,
+    Expired,
+}
+
+impl Default for TradeStatus {
+    fn default() -> Self {
+        Self::Open
+    }
+}
+
+impl std::fmt::Display for TradeStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Open => write!(f, "OPEN"),
+            Self::Closed => write!(f, "CLOSED"),
+            Self::Expired => write!(f, "EXPIRED"),
+        }
+    }
+}
+
 /// Record of a follow trade (executed or dry-run).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct FollowRecord {
@@ -179,6 +204,33 @@ pub struct FollowRecord {
     pub price: f64,
     pub dry_run: bool,
     pub order_id: Option<String>,
+    #[serde(default)]
+    pub fill_price: Option<f64>,
+    #[serde(default)]
+    pub status: Option<TradeStatus>,
+    #[serde(default)]
+    pub closed_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub exit_price: Option<f64>,
+    #[serde(default)]
+    pub realized_pnl: Option<f64>,
+    #[serde(default)]
+    pub position_id: Option<String>,
+}
+
+impl FollowRecord {
+    /// Effective entry price: fill_price if available, otherwise signal price.
+    pub fn effective_entry(&self) -> f64 {
+        self.fill_price.unwrap_or(self.price)
+    }
+
+    /// Whether this trade is considered open.
+    pub fn is_open(&self) -> bool {
+        !matches!(
+            self.status.as_ref(),
+            Some(TradeStatus::Closed) | Some(TradeStatus::Expired)
+        )
+    }
 }
 
 /// Scoring result for a wallet.
@@ -193,4 +245,32 @@ pub struct SmartScore {
     pub rank: Option<u64>,
     pub name: Option<String>,
     pub updated_at: DateTime<Utc>,
+}
+
+// ── Odds Monitoring ─────────────────────────────────────────────
+
+/// A market being monitored for price changes.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct OddsWatch {
+    pub token_id: String,
+    pub label: String,
+    pub threshold_pct: f64,
+    pub baseline_price: f64,
+    pub last_price: f64,
+    pub added_at: DateTime<Utc>,
+    pub last_scanned: Option<DateTime<Utc>>,
+}
+
+/// An alert generated when price moves beyond threshold.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct OddsAlert {
+    pub id: String,
+    pub timestamp: DateTime<Utc>,
+    pub token_id: String,
+    pub label: String,
+    pub baseline_price: f64,
+    pub previous_price: f64,
+    pub current_price: f64,
+    pub change_pct: f64,
+    pub threshold_pct: f64,
 }

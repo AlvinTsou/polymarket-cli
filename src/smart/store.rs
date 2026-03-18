@@ -3,7 +3,10 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 
-use super::{FollowRecord, Signal, SmartScore, TelegramConfig, WalletSnapshot, WatchedWallet};
+use super::{
+    FollowRecord, OddsAlert, OddsWatch, Signal, SmartScore, TelegramConfig, WalletSnapshot,
+    WatchedWallet,
+};
 
 fn smart_dir() -> Result<PathBuf> {
     let home = dirs::home_dir().context("Could not determine home directory")?;
@@ -183,6 +186,57 @@ pub fn load_follow_records() -> Result<Vec<FollowRecord>> {
         .collect())
 }
 
+/// Rewrite all follow records (used when closing positions).
+pub fn save_follow_records(records: &[FollowRecord]) -> Result<()> {
+    use std::io::Write;
+    let path = smart_dir()?.join("follows.jsonl");
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(&path)?;
+    for record in records {
+        writeln!(file, "{}", serde_json::to_string(record)?)?;
+    }
+    Ok(())
+}
+
+/// Close a matching open follow record by condition_id + outcome.
+/// Returns true if a record was closed.
+pub fn close_follow_position(
+    condition_id: &str,
+    outcome: &str,
+    exit_price: f64,
+) -> Result<bool> {
+    let mut records = load_follow_records()?;
+    let now = chrono::Utc::now();
+    let mut closed = false;
+
+    for r in records.iter_mut() {
+        if r.condition_id == condition_id
+            && r.outcome == outcome
+            && r.side == "BUY"
+            && r.is_open()
+        {
+            let entry = r.effective_entry();
+            let shares = if entry > 0.0 { r.amount_usdc / entry } else { 0.0 };
+            let pnl = shares * exit_price - r.amount_usdc;
+
+            r.status = Some(super::TradeStatus::Closed);
+            r.closed_at = Some(now);
+            r.exit_price = Some(exit_price);
+            r.realized_pnl = Some(pnl);
+            closed = true;
+            break; // close oldest matching first
+        }
+    }
+
+    if closed {
+        save_follow_records(&records)?;
+    }
+    Ok(closed)
+}
+
 /// Load all snapshots (all watched wallets).
 pub fn load_all_snapshots() -> Result<Vec<WalletSnapshot>> {
     let dir = snapshots_dir()?;
@@ -222,4 +276,77 @@ pub fn today_spend() -> Result<f64> {
         .filter(|r| !r.dry_run && r.timestamp.date_naive() == today)
         .map(|r| r.amount_usdc)
         .sum())
+}
+
+// ── Odds watches ────────────────────────────────────────────────
+
+pub fn load_odds_watches() -> Result<Vec<OddsWatch>> {
+    let path = smart_dir()?.join("odds.json");
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let data = fs::read_to_string(&path)?;
+    Ok(serde_json::from_str(&data)?)
+}
+
+pub fn save_odds_watches(watches: &[OddsWatch]) -> Result<()> {
+    let path = smart_dir()?.join("odds.json");
+    let json = serde_json::to_string_pretty(watches)?;
+    fs::write(&path, json)?;
+    Ok(())
+}
+
+pub fn add_odds_watch(watch: OddsWatch) -> Result<bool> {
+    let mut watches = load_odds_watches()?;
+    if watches.iter().any(|w| w.token_id == watch.token_id) {
+        return Ok(false);
+    }
+    watches.push(watch);
+    save_odds_watches(&watches)?;
+    Ok(true)
+}
+
+pub fn remove_odds_watch(token_id: &str) -> Result<bool> {
+    let mut watches = load_odds_watches()?;
+    let before = watches.len();
+    watches.retain(|w| w.token_id != token_id);
+    if watches.len() == before {
+        return Ok(false);
+    }
+    save_odds_watches(&watches)?;
+    Ok(true)
+}
+
+// ── Odds alerts (append-only JSONL) ─────────────────────────────
+
+pub fn append_odds_alerts(alerts: &[OddsAlert]) -> Result<()> {
+    use std::io::Write;
+    if alerts.is_empty() {
+        return Ok(());
+    }
+    let path = smart_dir()?.join("odds_alerts.jsonl");
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)?;
+    for alert in alerts {
+        writeln!(file, "{}", serde_json::to_string(alert)?)?;
+    }
+    Ok(())
+}
+
+pub fn load_odds_alerts(limit: usize) -> Result<Vec<OddsAlert>> {
+    let path = smart_dir()?.join("odds_alerts.jsonl");
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let data = fs::read_to_string(&path)?;
+    let mut alerts: Vec<OddsAlert> = data
+        .lines()
+        .filter(|l| !l.is_empty())
+        .filter_map(|l| serde_json::from_str(l).ok())
+        .collect();
+    alerts.reverse();
+    alerts.truncate(limit);
+    Ok(alerts)
 }
