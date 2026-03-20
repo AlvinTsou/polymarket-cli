@@ -1171,6 +1171,19 @@ fn filter_records(
         .collect()
 }
 
+/// Calculate PnL accounting for BUY vs SELL direction.
+fn calc_open_pnl(side: &str, amount_usdc: f64, entry_price: f64, current_price: f64) -> f64 {
+    if entry_price <= 0.0 { return 0.0; }
+    let shares = amount_usdc / entry_price;
+    if side == "SELL" {
+        // SELL profits when price drops
+        amount_usdc + (entry_price - current_price) * shares - amount_usdc
+    } else {
+        // BUY profits when price rises
+        shares * current_price - amount_usdc
+    }
+}
+
 async fn cmd_follow(
     amount: f64,
     dry_run: bool,
@@ -1644,11 +1657,9 @@ fn cmd_roi(
                 closed_wins += 1;
             }
         } else {
-            // Open trade: use snapshot price
-            let shares = r.amount_usdc / entry_price;
+            // Open trade: use snapshot price, account for BUY/SELL direction
             current_price = price_map.get(&r.condition_id).copied().unwrap_or(entry_price);
-            let current_value = shares * current_price;
-            pnl = current_value - r.amount_usdc;
+            pnl = calc_open_pnl(&r.side, r.amount_usdc, entry_price, current_price);
             roi_pct = if r.amount_usdc > 0.0 { (pnl / r.amount_usdc) * 100.0 } else { 0.0 };
             unrealized_pnl_total += pnl;
         }
@@ -2007,31 +2018,59 @@ fn build_live_dashboard() -> String {
         })
         .collect();
 
-    // -- Follows table + PnL --
-    let mut total_invested = 0.0f64;
-    let mut total_pnl = 0.0f64;
-    let follows_rows: String = follows
-        .iter()
-        .map(|r| {
-            let entry = r.price;
-            let current = price_map.get(&r.condition_id).copied().unwrap_or(entry);
-            let shares = if entry > 0.0 { r.amount_usdc / entry } else { 0.0 };
-            let pnl = shares * current - r.amount_usdc;
-            let roi = if r.amount_usdc > 0.0 { pnl / r.amount_usdc * 100.0 } else { 0.0 };
-            total_invested += r.amount_usdc;
-            total_pnl += pnl;
-            let pnl_cls = if pnl >= 0.0 { "text-green" } else { "text-red" };
-            let mode_cls = if r.dry_run { "badge-low" } else { "badge-high" };
-            let mode = if r.dry_run { "DRY" } else { "LIVE" };
-            format!(
-                "<tr><td>{}</td><td><span class='badge {}'>{}</span></td><td>{}</td><td>{}</td><td>${:.2}</td><td>{:.3}</td><td>{:.3}</td><td class='{}'>{:+.2}</td><td class='{}'>{:+.1}%</td></tr>",
-                r.timestamp.format("%m-%d %H:%M"),
-                mode_cls, mode, html_escape(&r.side),
-                html_escape(&r.market_title), r.amount_usdc, entry, current,
-                pnl_cls, pnl, pnl_cls, roi
-            )
-        })
-        .collect();
+    // -- Follows: split paper vs live --
+    let mut paper_invested = 0.0f64;
+    let mut paper_pnl = 0.0f64;
+    let mut paper_count = 0u32;
+    let mut paper_wins = 0u32;
+    let mut live_invested = 0.0f64;
+    let mut live_pnl = 0.0f64;
+
+    let build_follow_row = |r: &FollowRecord, price_map: &std::collections::HashMap<String, f64>| -> (String, f64) {
+        let entry = r.effective_entry();
+        let (pnl, current);
+        if !r.is_open() {
+            pnl = r.realized_pnl.unwrap_or(0.0);
+            current = r.exit_price.unwrap_or(entry);
+        } else {
+            current = price_map.get(&r.condition_id).copied().unwrap_or(entry);
+            pnl = calc_open_pnl(&r.side, r.amount_usdc, entry, current);
+        }
+        let roi = if r.amount_usdc > 0.0 { pnl / r.amount_usdc * 100.0 } else { 0.0 };
+        let pnl_cls = if pnl >= 0.0 { "text-green" } else { "text-red" };
+        let status = r.status.as_ref().map(|s| s.to_string()).unwrap_or_else(|| "OPEN".to_string());
+        let status_cls = match status.as_str() { "CLOSED" => "color:#60a5fa", _ => "color:#94a3b8" };
+        let row = format!(
+            "<tr><td>{}</td><td style='{}'>{}</td><td>{}</td><td>{}</td><td>${:.2}</td><td>{:.3}</td><td>{:.3}</td><td class='{}'>{:+.2}</td><td class='{}'>{:+.1}%</td></tr>",
+            r.timestamp.format("%m-%d %H:%M"),
+            status_cls, status, html_escape(&r.side),
+            html_escape(&r.market_title), r.amount_usdc, entry, current,
+            pnl_cls, pnl, pnl_cls, roi
+        );
+        (row, pnl)
+    };
+
+    let mut paper_rows = String::new();
+    let mut live_rows = String::new();
+
+    for r in &follows {
+        let (row, pnl) = build_follow_row(r, &price_map);
+        if r.dry_run {
+            paper_rows.push_str(&row);
+            paper_invested += r.amount_usdc;
+            paper_pnl += pnl;
+            paper_count += 1;
+            if pnl > 0.0 { paper_wins += 1; }
+        } else {
+            live_rows.push_str(&row);
+            live_invested += r.amount_usdc;
+            live_pnl += pnl;
+        }
+    }
+
+    let total_invested = paper_invested + live_invested;
+    let total_pnl = paper_pnl + live_pnl;
+    let paper_win_rate = if paper_count > 0 { paper_wins as f64 / paper_count as f64 * 100.0 } else { 0.0 };
 
     // -- Odds watches table --
     let odds_rows: String = odds_watches
@@ -2069,7 +2108,6 @@ fn build_live_dashboard() -> String {
         })
         .collect();
 
-    let total_roi = if total_invested > 0.0 { total_pnl / total_invested * 100.0 } else { 0.0 };
     let pnl_color = if total_pnl >= 0.0 { "#4ade80" } else { "#f87171" };
 
     format!(
@@ -2124,9 +2162,10 @@ tr:hover td{{background:#111827aa}}
   <div class="card"><div class="label">Watched Wallets</div><div class="value">{wallet_count}</div></div>
   <div class="card"><div class="label">Signals</div><div class="value">{signal_count}</div></div>
   <div class="card"><div class="label">Odds Watches</div><div class="value">{odds_count}</div></div>
-  <div class="card"><div class="label">Follow Trades</div><div class="value">{follow_count}</div></div>
-  <div class="card"><div class="label">Total Invested</div><div class="value">${total_invested:.0}</div></div>
-  <div class="card"><div class="label">Total PnL</div><div class="value" style="color:{pnl_color}">{total_pnl:+.2}</div></div>
+  <div class="card"><div class="label">Paper Trades</div><div class="value">{paper_count}</div><div class="meta">{paper_win_rate:.0}% win rate</div></div>
+  <div class="card"><div class="label">Paper PnL</div><div class="value" style="color:{paper_pnl_color}">{paper_pnl:+.2}</div><div class="meta">${paper_invested:.0} invested</div></div>
+  <div class="card"><div class="label">Live Trades</div><div class="value">{live_count}</div></div>
+  <div class="card"><div class="label">Total PnL</div><div class="value" style="color:{pnl_color}">{total_pnl:+.2}</div><div class="meta">${total_invested:.0} total</div></div>
 </div>
 
 <div class="grid-2">
@@ -2155,9 +2194,14 @@ tr:hover td{{background:#111827aa}}
 {signals_section}
 </div>
 
-<h2>Follow Trades <span class="count">{follow_count}</span></h2>
+<h2>Paper Trades <span class="count">{paper_count}</span></h2>
 <div class="section">
-{follows_section}
+{paper_section}
+</div>
+
+<h2>Live Trades <span class="count">{live_count}</span></h2>
+<div class="section">
+{live_section}
 </div>
 
 <p class="meta" style="margin-top:2rem;text-align:center">PMCC Smart Money System &mdash; polymarket-cli</p>
@@ -2168,7 +2212,12 @@ tr:hover td{{background:#111827aa}}
         signal_count = signals.len(),
         odds_count = odds_watches.len(),
         odds_alert_count = odds_alerts.len(),
-        follow_count = follows.len(),
+        paper_count = paper_count,
+        paper_pnl = paper_pnl,
+        paper_pnl_color = if paper_pnl >= 0.0 { "#4ade80" } else { "#f87171" },
+        paper_invested = paper_invested,
+        paper_win_rate = paper_win_rate,
+        live_count = follows.iter().filter(|r| !r.dry_run).count(),
         total_invested = total_invested,
         total_pnl = total_pnl,
         pnl_color = pnl_color,
@@ -2192,12 +2241,24 @@ tr:hover td{{background:#111827aa}}
         } else {
             format!("<table><thead><tr><th>Time</th><th>Type</th><th>Conf</th><th>Market</th><th>Outcome</th><th>Price</th><th>Size</th></tr></thead><tbody>{signals_rows}</tbody></table>")
         },
-        follows_section = if follows_rows.is_empty() {
-            "<p class='empty'>No follow trades yet.</p>".into()
+        paper_section = if paper_rows.is_empty() {
+            "<p class='empty'>No paper trades yet. Run monitor with --paper-trade.</p>".into()
         } else {
+            let paper_roi = if paper_invested > 0.0 { paper_pnl / paper_invested * 100.0 } else { 0.0 };
+            let pc = if paper_pnl >= 0.0 { "#4ade80" } else { "#f87171" };
             format!(
-                "<table><thead><tr><th>Time</th><th>Mode</th><th>Side</th><th>Market</th><th>Invested</th><th>Entry</th><th>Now</th><th>PnL</th><th>ROI</th></tr></thead><tbody>{follows_rows}</tbody></table>\
-                 <p style='margin-top:.5rem;color:#94a3b8;font-size:.8rem'>Total: ${total_invested:.2} | PnL: <span style='color:{pnl_color}'>{total_pnl:+.2}</span> ({total_roi:+.1}%)</p>"
+                "<table><thead><tr><th>Time</th><th>Status</th><th>Side</th><th>Market</th><th>Invested</th><th>Entry</th><th>Now/Exit</th><th>PnL</th><th>ROI</th></tr></thead><tbody>{paper_rows}</tbody></table>\
+                 <p style='margin-top:.5rem;color:#94a3b8;font-size:.8rem'>Paper total: ${paper_invested:.2} | PnL: <span style='color:{pc}'>{paper_pnl:+.2}</span> ({paper_roi:+.1}%) | Win rate: {paper_win_rate:.0}%</p>"
+            )
+        },
+        live_section = if live_rows.is_empty() {
+            "<p class='empty'>No live trades yet.</p>".into()
+        } else {
+            let live_roi = if live_invested > 0.0 { live_pnl / live_invested * 100.0 } else { 0.0 };
+            let lc = if live_pnl >= 0.0 { "#4ade80" } else { "#f87171" };
+            format!(
+                "<table><thead><tr><th>Time</th><th>Status</th><th>Side</th><th>Market</th><th>Invested</th><th>Entry</th><th>Now/Exit</th><th>PnL</th><th>ROI</th></tr></thead><tbody>{live_rows}</tbody></table>\
+                 <p style='margin-top:.5rem;color:#94a3b8;font-size:.8rem'>Live total: ${live_invested:.2} | PnL: <span style='color:{lc}'>{live_pnl:+.2}</span> ({live_roi:+.1}%)</p>"
             )
         },
     )
@@ -2259,6 +2320,8 @@ fn evaluate_triggers(
             if (agg.wallet_count as u32) < config.min_wallets { continue; }
             if confidence_rank(&agg.confidence) < confidence_rank(&config.min_confidence) { continue; }
             if !matches_include(&agg.market_title) || matches_exclude(&agg.market_title) { continue; }
+            // Skip resolved/near-zero price markets
+            if agg.avg_price < 0.03 || agg.avg_price > 0.97 { continue; }
 
             let first_sig = agg.signals.first();
             triggers.push(TriggerEvent {
@@ -2285,6 +2348,9 @@ fn evaluate_triggers(
         if aggregated_conditions.contains(&sig.condition_id) { continue; }
         if confidence_rank(&sig.confidence) < confidence_rank(&config.min_confidence) { continue; }
         if !matches_include(&sig.market_title) || matches_exclude(&sig.market_title) { continue; }
+        // Skip resolved/near-zero price markets
+        let sig_price: f64 = sig.price.parse().unwrap_or(0.0);
+        if sig_price < 0.03 || sig_price > 0.97 { continue; }
 
         let tag = sig.wallet_tag.as_deref().unwrap_or(&sig.wallet[..8.min(sig.wallet.len())]);
         triggers.push(TriggerEvent {
@@ -2466,9 +2532,24 @@ async fn cmd_monitor(
                     let today_spent = store::today_spend().unwrap_or(0.0);
                     let mut spent = 0.0f64;
 
+                    // Load existing open positions to avoid duplicates
+                    let existing_follows = store::load_follow_records().unwrap_or_default();
+                    let open_positions: std::collections::HashSet<(String, String)> = existing_follows.iter()
+                        .filter(|r| r.dry_run && r.is_open())
+                        .map(|r| (r.condition_id.clone(), r.outcome.clone()))
+                        .collect();
+
                     for trigger in &triggers {
                         if matches!(trigger.trigger_type, crate::smart::TriggerType::OddsAlert) {
                             continue; // don't paper-trade on pure odds alerts
+                        }
+                        // Skip resolved/near-zero markets
+                        if trigger.price < 0.03 || trigger.price > 0.97 {
+                            continue;
+                        }
+                        // Skip if already have open paper position on same market+outcome
+                        if open_positions.contains(&(trigger.condition_id.clone(), trigger.outcome.clone())) {
+                            continue;
                         }
                         if today_spent + spent + config.amount > config.max_per_day {
                             break;
@@ -2612,8 +2693,7 @@ fn cmd_report() -> Result<()> {
                 if rpnl > 0.0 { closed_wins += 1; }
             } else {
                 current = price_map.get(&r.condition_id).copied().unwrap_or(entry);
-                let shares = if entry > 0.0 { r.amount_usdc / entry } else { 0.0 };
-                pnl = shares * current - r.amount_usdc;
+                pnl = calc_open_pnl(&r.side, r.amount_usdc, entry, current);
                 unrealized_pnl += pnl;
             }
 
