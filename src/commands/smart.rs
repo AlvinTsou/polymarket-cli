@@ -2320,8 +2320,8 @@ fn evaluate_triggers(
             if (agg.wallet_count as u32) < config.min_wallets { continue; }
             if confidence_rank(&agg.confidence) < confidence_rank(&config.min_confidence) { continue; }
             if !matches_include(&agg.market_title) || matches_exclude(&agg.market_title) { continue; }
-            // Skip resolved/near-zero price markets
-            if agg.avg_price < 0.03 || agg.avg_price > 0.97 { continue; }
+            // Skip near-resolved markets
+            if agg.avg_price < 0.05 || agg.avg_price > 0.95 { continue; }
 
             let first_sig = agg.signals.first();
             triggers.push(TriggerEvent {
@@ -2346,11 +2346,15 @@ fn evaluate_triggers(
 
     for sig in all_signals {
         if aggregated_conditions.contains(&sig.condition_id) { continue; }
+        // Only trigger on NewPosition — skip IncreasePosition/DecreasePosition noise
+        if !matches!(sig.signal_type, crate::smart::SignalType::NewPosition | crate::smart::SignalType::ClosePosition) {
+            continue;
+        }
         if confidence_rank(&sig.confidence) < confidence_rank(&config.min_confidence) { continue; }
         if !matches_include(&sig.market_title) || matches_exclude(&sig.market_title) { continue; }
-        // Skip resolved/near-zero price markets
+        // Tighter price filter: skip near-resolved markets
         let sig_price: f64 = sig.price.parse().unwrap_or(0.0);
-        if sig_price < 0.03 || sig_price > 0.97 { continue; }
+        if sig_price < 0.05 || sig_price > 0.95 { continue; }
 
         let tag = sig.wallet_tag.as_deref().unwrap_or(&sig.wallet[..8.min(sig.wallet.len())]);
         triggers.push(TriggerEvent {
@@ -2532,23 +2536,32 @@ async fn cmd_monitor(
                     let today_spent = store::today_spend().unwrap_or(0.0);
                     let mut spent = 0.0f64;
 
-                    // Load existing open positions to avoid duplicates
+                    // Load existing open positions to avoid duplicates and hedging
                     let existing_follows = store::load_follow_records().unwrap_or_default();
                     let open_positions: std::collections::HashSet<(String, String)> = existing_follows.iter()
                         .filter(|r| r.dry_run && r.is_open())
                         .map(|r| (r.condition_id.clone(), r.outcome.clone()))
+                        .collect();
+                    // Track all open condition_ids to prevent opposite-side hedging
+                    let open_markets: std::collections::HashSet<String> = existing_follows.iter()
+                        .filter(|r| r.dry_run && r.is_open())
+                        .map(|r| r.condition_id.clone())
                         .collect();
 
                     for trigger in &triggers {
                         if matches!(trigger.trigger_type, crate::smart::TriggerType::OddsAlert) {
                             continue; // don't paper-trade on pure odds alerts
                         }
-                        // Skip resolved/near-zero markets
-                        if trigger.price < 0.03 || trigger.price > 0.97 {
+                        // Tighter price filter
+                        if trigger.price < 0.05 || trigger.price > 0.95 {
                             continue;
                         }
                         // Skip if already have open paper position on same market+outcome
                         if open_positions.contains(&(trigger.condition_id.clone(), trigger.outcome.clone())) {
+                            continue;
+                        }
+                        // Anti-hedge: skip if we already have any open position on this market
+                        if open_markets.contains(&trigger.condition_id) {
                             continue;
                         }
                         if today_spent + spent + config.amount > config.max_per_day {
