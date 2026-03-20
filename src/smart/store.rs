@@ -5,7 +5,7 @@ use anyhow::{Context, Result};
 
 use super::{
     FollowRecord, MonitorConfig, OddsAlert, OddsWatch, Signal, SmartScore, TelegramConfig,
-    WalletSnapshot, WatchedWallet,
+    WalletPnlSnapshot, WalletSnapshot, WatchedWallet,
 };
 
 fn smart_dir() -> Result<PathBuf> {
@@ -367,4 +367,54 @@ pub fn load_odds_alerts(limit: usize) -> Result<Vec<OddsAlert>> {
     alerts.reverse();
     alerts.truncate(limit);
     Ok(alerts)
+}
+
+// ── PnL history ──────────────────────────────────────────────────
+
+fn pnl_history_dir() -> Result<PathBuf> {
+    let dir = smart_dir()?.join("pnl_history");
+    fs::create_dir_all(&dir)?;
+    Ok(dir)
+}
+
+pub fn append_pnl_snapshot(address: &str, snapshot: &WalletPnlSnapshot) -> Result<()> {
+    use std::io::Write;
+    let file_path = pnl_history_dir()?.join(format!("{}.jsonl", sanitize_address(address)));
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&file_path)?;
+    writeln!(file, "{}", serde_json::to_string(snapshot)?)?;
+    Ok(())
+}
+
+pub fn load_pnl_history(address: &str) -> Result<Vec<WalletPnlSnapshot>> {
+    let file_path = pnl_history_dir()?.join(format!("{}.jsonl", sanitize_address(address)));
+    if !file_path.exists() {
+        return Ok(Vec::new());
+    }
+    let data = fs::read_to_string(&file_path)?;
+    Ok(data
+        .lines()
+        .filter(|l| !l.is_empty())
+        .filter_map(|l| serde_json::from_str(l).ok())
+        .collect())
+}
+
+/// Update a wallet in the watch list (by address match).
+pub fn update_wallet(address: &str, updater: impl FnOnce(&mut WatchedWallet)) -> Result<bool> {
+    let mut wallets = load_wallets()?;
+    let normalized = address.to_lowercase();
+    let mut found = false;
+    for w in wallets.iter_mut() {
+        if w.address.to_lowercase() == normalized {
+            updater(w);
+            found = true;
+            break;
+        }
+    }
+    if found {
+        save_wallets(&wallets)?;
+    }
+    Ok(found)
 }

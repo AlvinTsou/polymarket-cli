@@ -14,6 +14,30 @@ pub struct WatchedWallet {
     pub tag: Option<String>,
     pub added_at: DateTime<Utc>,
     pub score: Option<f64>,
+    #[serde(default)]
+    pub discovery_periods: Option<Vec<String>>,
+    #[serde(default)]
+    pub last_seen_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub stale: Option<bool>,
+}
+
+/// PnL snapshot for a wallet at a point in time.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct WalletPnlSnapshot {
+    pub timestamp: DateTime<Utc>,
+    pub open_pnl: f64,
+    pub realized_pnl: f64,
+    pub position_count: u32,
+}
+
+/// Category breakdown for trade analysis.
+#[derive(Clone, Debug)]
+pub struct CategoryStat {
+    pub name: String,
+    pub position_count: u32,
+    pub total_pnl: f64,
+    pub pct: f64,
 }
 
 /// A point-in-time snapshot of a single position.

@@ -1,48 +1,51 @@
 # PMCC Smart Money System — TODO
 
-## Sprint 1-6: COMPLETE (see git history)
+## Sprint 1-7: COMPLETE (see git history)
 
-## Sprint 7：即時監控 + 條件觸發 + Paper Trading
+## Sprint 8：Smart Wallet Intelligence
 
-### Step 1: Cargo.toml — tokio features
-- [x] Add `time`, `net`, `signal`, `io-util` to tokio features
+### Step 1: WatchedWallet extension
+- [x] Add `discovery_periods`, `last_seen_at`, `stale` fields (Option + serde(default))
+- [x] Add `WalletPnlSnapshot`, `CategoryStat` types
 
-### Step 2: MonitorConfig type + store
-- [x] `MonitorConfig` struct in `mod.rs` with all fields + Default
-- [x] `load_monitor_config()` / `save_monitor_config()` in `store.rs`
+### Step 2: Multi-period discover + auto-renew
+- [x] `--auto-renew` flag on `smart discover`
+- [x] Query day + week + month leaderboards concurrently
+- [x] Merge/dedup wallets, tag with periods found
+- [x] Mark stale wallets not seen on any leaderboard
+- [x] `update_wallet()` helper in store
 
-### Step 3: Duration parser
-- [x] `parse_duration()` — supports `30s`, `3m`, `1h` format
+### Step 3: `smart wallet-pnl` command
+- [x] Fetch open positions via `PositionsRequest` → `cash_pnl`
+- [x] Fetch closed positions via `ClosedPositionsRequest` → `realized_pnl`
+- [x] Compute open PnL, realized PnL, total PnL, win rate
+- [x] Table output: per-position breakdown + summary
+- [x] Auto-save PnL snapshot to history
 
-### Step 4: TriggerEvent + evaluate_triggers()
-- [x] `TriggerEvent` and `TriggerType` types in `mod.rs`
-- [x] `evaluate_triggers()` — filters by confidence, wallets, market keywords, odds threshold
-- [x] Aggregated signal support (multi-wallet convergence)
-- [x] Dedup: aggregated triggers skip covered individual signals
+### Step 4: PnL snapshot storage
+- [x] `pnl_history/{address}.jsonl` — append per wallet-pnl call
+- [x] `append_pnl_snapshot()` / `load_pnl_history()` in store
 
-### Step 5: CLI subcommand
-- [x] Add `Monitor { ... }` to `SmartCommand` with 12 flags
-- [x] Wire in `execute()` dispatch
+### Step 5: `smart analyze` command
+- [x] Category detection (Politics, Crypto, AI/Tech, Sports, Economy, Geopolitics, Other)
+- [x] Trading style profile (avg size, entry price, concentration, direction bias)
+- [x] Contrarian score (positions priced < 0.40)
+- [x] Conviction assessment
+- [x] Recent activity from signal history
 
-### Step 6: cmd_monitor() loop
-- [x] tokio::time::interval loop with configurable duration
-- [x] Scan wallets each cycle, generate signals, aggregate
-- [x] Scan odds if threshold > 0
-- [x] Evaluate triggers against config rules
-- [x] Paper trade on trigger (dry-run FollowRecord with position_id)
-- [x] Close positions on ClosePosition detection
-- [x] Daily spend cap enforcement
-- [x] Ctrl+C graceful shutdown via tokio::signal
-- [x] Cycle summary line to stderr
+### Step 6: Monitor integration
+- [ ] Auto-renew watch list every 6h in monitor loop (future enhancement)
+- [ ] Record PnL snapshot per wallet per scan cycle (future enhancement)
 
-### Step 7: Notification formatting
-- [x] `build_monitor_notification()` for Telegram (trigger type + reason + paper count)
-- [x] macOS osascript notification with Glass sound
-- [x] `--save` / `--load` config persistence
+### Step 7: Report enhancement
+- [ ] Per-wallet PnL summary cards (future enhancement)
+- [ ] Category distribution SVG chart (future enhancement)
 
 ### Step 8: Build + Test
-- [x] `cargo check` pass (5 warnings, all pre-existing or trivial)
-- [x] `cargo test` — 108 unit + 49 integration = 157 passed
+- [x] `cargo check` pass
+- [x] `cargo test` — 157 tests passed
 - [x] Release binary built
-- [x] CLI help verified
-- [ ] Live test (user to run `smart monitor --interval 30s --notify --paper-trade`)
+- [x] CLI help verified for all 3 new commands
+- [ ] Live test: `smart discover --auto-renew`
+- [ ] Live test: `smart wallet-pnl 0x...`
+- [ ] Live test: `smart analyze 0x...`

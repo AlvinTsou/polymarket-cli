@@ -5,6 +5,7 @@ use polymarket_client_sdk::data;
 use rust_decimal::prelude::ToPrimitive;
 
 use super::data::{OrderBy, TimePeriod};
+use super::parse_address;
 use crate::output::OutputFormat;
 use crate::output::smart::{
     print_discover_results, print_profile, print_scan_result, print_signals, print_wallet_list,
@@ -40,6 +41,26 @@ pub enum SmartCommand {
         /// Auto-watch wallets with score above this threshold
         #[arg(long)]
         auto_watch: Option<f64>,
+
+        /// Auto-renew: scan day+week+month, add new high-scorers, mark stale
+        #[arg(long)]
+        auto_renew: bool,
+    },
+
+    /// Show detailed PnL for a specific wallet
+    WalletPnl {
+        /// Wallet address (0x...)
+        address: String,
+    },
+
+    /// Analyze a wallet's trading patterns and style
+    Analyze {
+        /// Wallet address (0x...)
+        address: String,
+
+        /// Max positions/trades to analyze
+        #[arg(long, default_value = "50")]
+        depth: i32,
     },
 
     /// Add a wallet to the watch list
@@ -300,7 +321,17 @@ pub async fn execute(
             order_by,
             limit,
             auto_watch,
-        } => cmd_discover(client, period, order_by, limit, auto_watch, &output).await,
+            auto_renew,
+        } => {
+            if auto_renew {
+                cmd_auto_renew(client, limit, auto_watch.unwrap_or(85.0), &output).await
+            } else {
+                cmd_discover(client, period, order_by, limit, auto_watch, &output).await
+            }
+        }
+
+        SmartCommand::WalletPnl { address } => cmd_wallet_pnl(client, &address, &output).await,
+        SmartCommand::Analyze { address, depth } => cmd_analyze(client, &address, depth, &output).await,
 
         SmartCommand::Watch { address, tag } => cmd_watch(&address, tag, &output),
         SmartCommand::Unwatch { address } => cmd_unwatch(&address, &output),
@@ -437,6 +468,9 @@ async fn cmd_discover(
                     tag: Some("leaderboard".into()),
                     added_at: Utc::now(),
                     score: Some(s.score),
+                    discovery_periods: None,
+                    last_seen_at: None,
+                    stale: None,
                 };
                 if store::add_wallet(wallet)? {
                     watched += 1;
@@ -451,12 +485,444 @@ async fn cmd_discover(
     print_discover_results(&scores, output)
 }
 
+// ── Auto-Renew ──────────────────────────────────────────────────
+
+async fn cmd_auto_renew(
+    client: &data::Client,
+    limit: i32,
+    threshold: f64,
+    output: &OutputFormat,
+) -> Result<()> {
+    use polymarket_client_sdk::data::types::request::TraderLeaderboardRequest;
+
+    let periods = [
+        ("day", polymarket_client_sdk::data::types::TimePeriod::Day),
+        ("week", polymarket_client_sdk::data::types::TimePeriod::Week),
+        ("month", polymarket_client_sdk::data::types::TimePeriod::Month),
+    ];
+
+    // Collect wallets across all periods
+    let mut seen: std::collections::HashMap<String, (f64, Vec<String>)> = std::collections::HashMap::new();
+
+    for (period_name, period_val) in &periods {
+        let request = TraderLeaderboardRequest::builder()
+            .time_period(*period_val)
+            .order_by(polymarket_client_sdk::data::types::LeaderboardOrderBy::Pnl)
+            .limit(limit)?
+            .build();
+
+        match client.leaderboard(&request).await {
+            Ok(entries) => {
+                for e in &entries {
+                    let addr = e.proxy_wallet.to_string().to_lowercase();
+                    let score = scorer::score_from_leaderboard(
+                        &addr,
+                        e.user_name.as_deref(),
+                        e.pnl.to_f64().unwrap_or(0.0),
+                        e.vol.to_f64().unwrap_or(0.0),
+                        e.rank as u64,
+                    ).score;
+                    let entry = seen.entry(addr).or_insert((0.0, Vec::new()));
+                    if score > entry.0 { entry.0 = score; }
+                    if !entry.1.contains(&period_name.to_string()) {
+                        entry.1.push(period_name.to_string());
+                    }
+                }
+                eprintln!("  {period_name}: {} wallets", entries.len());
+            }
+            Err(e) => eprintln!("  {period_name}: error — {e}"),
+        }
+    }
+
+    // Add/update wallets above threshold
+    let mut added = 0u32;
+    let mut updated = 0u32;
+    let now = Utc::now();
+
+    for (addr, (score, periods_found)) in &seen {
+        if *score < threshold { continue; }
+
+        let existing = store::load_wallets()?;
+        let already = existing.iter().any(|w| w.address.to_lowercase() == *addr);
+
+        if already {
+            store::update_wallet(addr, |w| {
+                w.score = Some(*score);
+                w.discovery_periods = Some(periods_found.clone());
+                w.last_seen_at = Some(now);
+                w.stale = Some(false);
+            })?;
+            updated += 1;
+        } else {
+            let wallet = WatchedWallet {
+                address: addr.clone(),
+                tag: Some("leaderboard".into()),
+                added_at: now,
+                score: Some(*score),
+                discovery_periods: Some(periods_found.clone()),
+                last_seen_at: Some(now),
+                stale: Some(false),
+            };
+            if store::add_wallet(wallet)? { added += 1; }
+        }
+    }
+
+    // Mark stale: wallets not seen in any period
+    let seen_addrs: std::collections::HashSet<String> = seen.keys().cloned().collect();
+    let all_wallets = store::load_wallets()?;
+    let mut stale_count = 0u32;
+    for w in &all_wallets {
+        if w.tag.as_deref() == Some("leaderboard") && !seen_addrs.contains(&w.address.to_lowercase()) {
+            store::update_wallet(&w.address, |w| { w.stale = Some(true); })?;
+            stale_count += 1;
+        }
+    }
+
+    match output {
+        OutputFormat::Table => {
+            println!("Auto-renew complete:");
+            println!("  Scanned:  {} unique wallets across 3 periods", seen.len());
+            println!("  Added:    {added} new (score >= {threshold})");
+            println!("  Updated:  {updated} existing");
+            println!("  Stale:    {stale_count} marked stale");
+        }
+        OutputFormat::Json => {
+            let data = serde_json::json!({
+                "scanned": seen.len(), "added": added, "updated": updated, "stale": stale_count,
+            });
+            crate::output::print_json(&data)?;
+        }
+    }
+    Ok(())
+}
+
+// ── Wallet PnL ──────────────────────────────────────────────────
+
+async fn cmd_wallet_pnl(
+    client: &data::Client,
+    address: &str,
+    output: &OutputFormat,
+) -> Result<()> {
+    use polymarket_client_sdk::data::types::request::{ClosedPositionsRequest, PositionsRequest};
+
+    let addr = parse_address(address)?;
+
+    // Fetch open positions
+    let open_req = PositionsRequest::builder().user(addr).limit(100)?.build();
+    let open_positions = client.positions(&open_req).await?;
+
+    // Fetch closed positions
+    let closed_req = ClosedPositionsRequest::builder().user(addr).limit(100)?.build();
+    let closed_positions = client.closed_positions(&closed_req).await?;
+
+    // Compute open PnL
+    let mut open_pnl = 0.0f64;
+    for p in &open_positions {
+        open_pnl += p.cash_pnl.to_f64().unwrap_or(0.0);
+    }
+
+    // Compute realized PnL + win rate
+    let mut realized_pnl = 0.0f64;
+    let mut closed_wins = 0u32;
+    for p in &closed_positions {
+        let rpnl = p.realized_pnl.to_f64().unwrap_or(0.0);
+        realized_pnl += rpnl;
+        if rpnl > 0.0 { closed_wins += 1; }
+    }
+
+    let total_pnl = open_pnl + realized_pnl;
+    let win_rate = if !closed_positions.is_empty() {
+        closed_wins as f64 / closed_positions.len() as f64 * 100.0
+    } else { 0.0 };
+
+    // Check if watched
+    let wallets = store::load_wallets()?;
+    let watched = wallets.iter().find(|w| w.address.to_lowercase() == address.to_lowercase());
+    let tag = watched.and_then(|w| w.tag.as_deref()).unwrap_or("—");
+    let score = watched.and_then(|w| w.score).unwrap_or(0.0);
+
+    match output {
+        OutputFormat::Table => {
+            let short_addr = if address.len() > 14 {
+                format!("{}...{}", &address[..8], &address[address.len()-6..])
+            } else { address.to_string() };
+
+            println!("=== Wallet PnL: {} ({}) ===", short_addr, tag);
+            if score > 0.0 { println!("  Score: {score:.1}"); }
+            println!();
+
+            // Open positions table
+            if !open_positions.is_empty() {
+                use tabled::{Table, Tabled, settings::Style};
+                #[derive(Tabled)]
+                struct ORow {
+                    #[tabled(rename = "Market")]
+                    market: String,
+                    #[tabled(rename = "Outcome")]
+                    outcome: String,
+                    #[tabled(rename = "Size")]
+                    size: String,
+                    #[tabled(rename = "Entry")]
+                    entry: String,
+                    #[tabled(rename = "Now")]
+                    now: String,
+                    #[tabled(rename = "PnL")]
+                    pnl: String,
+                }
+                let rows: Vec<ORow> = open_positions.iter().map(|p| {
+                    let pnl = p.cash_pnl.to_f64().unwrap_or(0.0);
+                    ORow {
+                        market: crate::output::truncate(&p.title, 30),
+                        outcome: p.outcome.clone(),
+                        size: format!("{}", p.size),
+                        entry: format!("{:.3}", p.avg_price),
+                        now: format!("{:.3}", p.cur_price),
+                        pnl: format!("{pnl:+.2}"),
+                    }
+                }).collect();
+                println!("Open Positions ({}):", open_positions.len());
+                println!("{}", Table::new(rows).with(Style::rounded()));
+            }
+
+            // Closed positions table
+            if !closed_positions.is_empty() {
+                use tabled::{Table, Tabled, settings::Style};
+                #[derive(Tabled)]
+                struct CRow {
+                    #[tabled(rename = "Market")]
+                    market: String,
+                    #[tabled(rename = "Outcome")]
+                    outcome: String,
+                    #[tabled(rename = "Avg Price")]
+                    avg_price: String,
+                    #[tabled(rename = "Realized PnL")]
+                    pnl: String,
+                }
+                let rows: Vec<CRow> = closed_positions.iter().take(20).map(|p| {
+                    let pnl = p.realized_pnl.to_f64().unwrap_or(0.0);
+                    CRow {
+                        market: crate::output::truncate(&p.title, 30),
+                        outcome: p.outcome.clone(),
+                        avg_price: format!("{:.3}", p.avg_price),
+                        pnl: format!("{pnl:+.2}"),
+                    }
+                }).collect();
+                println!("\nClosed Positions (showing {}/{}):", rows.len(), closed_positions.len());
+                println!("{}", Table::new(rows).with(Style::rounded()));
+            }
+
+            println!();
+            let pc = |v: f64| if v >= 0.0 { "+" } else { "" };
+            println!("  Open PnL:     {}{:.2} ({} positions)", pc(open_pnl), open_pnl, open_positions.len());
+            println!("  Realized PnL: {}{:.2} ({} closed)", pc(realized_pnl), realized_pnl, closed_positions.len());
+            println!("  Total PnL:    {}{:.2}", pc(total_pnl), total_pnl);
+            println!("  Win Rate:     {win_rate:.0}% ({closed_wins}/{})", closed_positions.len());
+        }
+        OutputFormat::Json => {
+            let data = serde_json::json!({
+                "address": address,
+                "open_pnl": open_pnl,
+                "realized_pnl": realized_pnl,
+                "total_pnl": total_pnl,
+                "open_positions": open_positions.len(),
+                "closed_positions": closed_positions.len(),
+                "win_rate": win_rate,
+            });
+            crate::output::print_json(&data)?;
+        }
+    }
+
+    // Store PnL snapshot
+    let snapshot = crate::smart::WalletPnlSnapshot {
+        timestamp: Utc::now(),
+        open_pnl,
+        realized_pnl,
+        position_count: open_positions.len() as u32,
+    };
+    store::append_pnl_snapshot(address, &snapshot)?;
+
+    Ok(())
+}
+
+// ── Analyze ─────────────────────────────────────────────────────
+
+const CATEGORIES: &[(&str, &[&str])] = &[
+    ("Politics", &["election", "president", "congress", "vote", "trump", "biden", "governor", "senate", "party"]),
+    ("Crypto", &["bitcoin", "ethereum", "btc", "eth", "crypto", "defi", "solana", "token"]),
+    ("AI/Tech", &["ai", "artificial", "openai", "google", "apple", "tech", "gpt", "model"]),
+    ("Sports", &["nba", "nfl", "soccer", "championship", "world cup", "game", "match", "league"]),
+    ("Economy", &["gdp", "inflation", "fed", "interest rate", "recession", "tariff", "unemployment"]),
+    ("Geopolitics", &["war", "russia", "china", "ukraine", "nato", "sanction", "missile"]),
+];
+
+fn categorize_market(title: &str) -> &'static str {
+    let lower = title.to_lowercase();
+    for (cat, keywords) in CATEGORIES {
+        if keywords.iter().any(|kw| lower.contains(kw)) {
+            return cat;
+        }
+    }
+    "Other"
+}
+
+async fn cmd_analyze(
+    client: &data::Client,
+    address: &str,
+    depth: i32,
+    output: &OutputFormat,
+) -> Result<()> {
+    use polymarket_client_sdk::data::types::request::{ClosedPositionsRequest, PositionsRequest};
+
+    let addr = parse_address(address)?;
+
+    // Fetch positions
+    let open_req = PositionsRequest::builder().user(addr).limit(depth)?.build();
+    let open_positions = client.positions(&open_req).await?;
+
+    let closed_req = ClosedPositionsRequest::builder().user(addr).limit(depth)?.build();
+    let closed_positions = client.closed_positions(&closed_req).await?;
+
+    // Category distribution
+    let mut cat_stats: std::collections::HashMap<&str, (u32, f64)> = std::collections::HashMap::new();
+    let total_positions = open_positions.len() + closed_positions.len();
+
+    for p in &open_positions {
+        let cat = categorize_market(&p.title);
+        let e = cat_stats.entry(cat).or_insert((0, 0.0));
+        e.0 += 1;
+        e.1 += p.cash_pnl.to_f64().unwrap_or(0.0);
+    }
+    for p in &closed_positions {
+        let cat = categorize_market(&p.title);
+        let e = cat_stats.entry(cat).or_insert((0, 0.0));
+        e.0 += 1;
+        e.1 += p.realized_pnl.to_f64().unwrap_or(0.0);
+    }
+
+    let mut categories: Vec<crate::smart::CategoryStat> = cat_stats.iter().map(|(name, (count, pnl))| {
+        crate::smart::CategoryStat {
+            name: name.to_string(),
+            position_count: *count,
+            total_pnl: *pnl,
+            pct: if total_positions > 0 { *count as f64 / total_positions as f64 * 100.0 } else { 0.0 },
+        }
+    }).collect();
+    categories.sort_by(|a, b| b.pct.partial_cmp(&a.pct).unwrap_or(std::cmp::Ordering::Equal));
+
+    // Trading style metrics
+    let mut total_size = 0.0f64;
+    let mut total_entry_price = 0.0f64;
+    let mut yes_count = 0u32;
+    let mut position_count = 0u32;
+    let mut top_3_size = 0.0f64;
+
+    let mut sizes: Vec<f64> = Vec::new();
+    for p in &open_positions {
+        let size = p.size.to_f64().unwrap_or(0.0);
+        let entry = p.avg_price.to_f64().unwrap_or(0.0);
+        total_size += size;
+        total_entry_price += entry;
+        position_count += 1;
+        if p.outcome.to_lowercase().contains("yes") { yes_count += 1; }
+        sizes.push(size);
+    }
+    sizes.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
+    for s in sizes.iter().take(3) { top_3_size += s; }
+
+    let avg_size = if position_count > 0 { total_size / position_count as f64 } else { 0.0 };
+    let avg_entry = if position_count > 0 { total_entry_price / position_count as f64 } else { 0.0 };
+    let yes_pct = if position_count > 0 { yes_count as f64 / position_count as f64 * 100.0 } else { 0.0 };
+    let concentration = if total_size > 0.0 { top_3_size / total_size * 100.0 } else { 0.0 };
+
+    // Contrarian score: how many positions are on outcomes priced < 0.40
+    let contrarian_count = open_positions.iter().filter(|p| p.cur_price.to_f64().unwrap_or(0.5) < 0.40).count();
+    let contrarian_score = if !open_positions.is_empty() {
+        (contrarian_count as f64 / open_positions.len() as f64 * 10.0).round() as u32
+    } else { 0 };
+
+    // Recent signals for this wallet
+    let all_signals = store::load_signals(200)?;
+    let addr_lower = address.to_lowercase();
+    let recent_signals: Vec<&Signal> = all_signals.iter()
+        .filter(|s| s.wallet.to_lowercase() == addr_lower)
+        .take(10)
+        .collect();
+
+    match output {
+        OutputFormat::Table => {
+            let short_addr = if address.len() > 14 {
+                format!("{}...{}", &address[..8], &address[address.len()-6..])
+            } else { address.to_string() };
+
+            println!("=== Trade Analysis: {} ===\n", short_addr);
+
+            // Category breakdown
+            println!("Category Breakdown:");
+            for c in &categories {
+                let pc = if c.total_pnl >= 0.0 { "+" } else { "" };
+                let bar = "#".repeat((c.pct / 5.0).round() as usize);
+                println!("  {:<12} {:>4.0}%  ({} pos, {}{:.2} PnL)  {}", c.name, c.pct, c.position_count, pc, c.total_pnl, bar);
+            }
+
+            // Trading style
+            println!("\nTrading Style:");
+            println!("  Avg position size:  {avg_size:.1}");
+            println!("  Avg entry price:    {avg_entry:.3} {}", if avg_entry < 0.40 { "(buys low-probability)" } else if avg_entry > 0.60 { "(buys high-probability)" } else { "(balanced)" });
+            println!("  Direction bias:     {yes_pct:.0}% YES positions");
+            println!("  Concentration:      top 3 = {concentration:.0}% of portfolio");
+            println!("  Contrarian score:   {contrarian_score}/10 ({contrarian_count}/{} positions priced < 0.40)", open_positions.len());
+
+            // Conviction label
+            let conviction = if avg_size > 100.0 && position_count < 10 { "High (large bets, few positions)" }
+                else if avg_size < 20.0 && position_count > 20 { "Low (small bets, many positions)" }
+                else { "Medium" };
+            println!("  Conviction:         {conviction}");
+
+            // Recent moves
+            if !recent_signals.is_empty() {
+                println!("\nRecent Activity ({} signals):", recent_signals.len());
+                for s in &recent_signals {
+                    println!("  {} {:<8} {:<4} {} [{}] @ {}",
+                        s.timestamp.format("%m-%d %H:%M"),
+                        s.signal_type.to_string(),
+                        s.confidence.to_string(),
+                        crate::output::truncate(&s.market_title, 30),
+                        s.outcome,
+                        s.price,
+                    );
+                }
+            }
+        }
+        OutputFormat::Json => {
+            let data = serde_json::json!({
+                "address": address,
+                "categories": categories.iter().map(|c| serde_json::json!({
+                    "name": c.name, "pct": c.pct, "positions": c.position_count, "pnl": c.total_pnl,
+                })).collect::<Vec<_>>(),
+                "style": {
+                    "avg_size": avg_size, "avg_entry_price": avg_entry,
+                    "yes_pct": yes_pct, "concentration_top3": concentration,
+                    "contrarian_score": contrarian_score,
+                },
+                "open_positions": open_positions.len(),
+                "closed_positions": closed_positions.len(),
+                "recent_signals": recent_signals.len(),
+            });
+            crate::output::print_json(&data)?;
+        }
+    }
+    Ok(())
+}
+
 fn cmd_watch(address: &str, tag: Option<String>, output: &OutputFormat) -> Result<()> {
     let wallet = WatchedWallet {
         address: address.to_string(),
         tag,
         added_at: Utc::now(),
         score: None,
+        discovery_periods: None,
+        last_seen_at: None,
+        stale: None,
     };
 
     if store::add_wallet(wallet)? {
@@ -524,6 +990,9 @@ async fn cmd_scan(
                 tag: None,
                 added_at: Utc::now(),
                 score: None,
+                discovery_periods: None,
+                last_seen_at: None,
+                stale: None,
             }]
         }
         None => {
