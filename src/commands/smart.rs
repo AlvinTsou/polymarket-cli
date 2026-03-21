@@ -2633,7 +2633,13 @@ fn evaluate_triggers(
         for agg in aggregated {
             if (agg.wallet_count as u32) < config.min_wallets { continue; }
             if confidence_rank(&agg.confidence) < confidence_rank(&config.min_confidence) { continue; }
-            if !matches_include(&agg.market_title) || matches_exclude(&agg.market_title) { continue; }
+            // If any wallet in aggregation is a holder, skip include check
+            let has_holder = agg.signals.iter().any(|s| s.wallet_tag.as_deref().map_or(false, |t| t.contains("-holder")));
+            if has_holder {
+                if matches_exclude(&agg.market_title) { continue; }
+            } else {
+                if !matches_include(&agg.market_title) || matches_exclude(&agg.market_title) { continue; }
+            }
             // Skip near-resolved markets
             if agg.avg_price < 0.05 || agg.avg_price > 0.95 { continue; }
 
@@ -2665,7 +2671,15 @@ fn evaluate_triggers(
             continue;
         }
         if confidence_rank(&sig.confidence) < confidence_rank(&config.min_confidence) { continue; }
-        if !matches_include(&sig.market_title) || matches_exclude(&sig.market_title) { continue; }
+
+        // Market-first wallets (tag contains "-holder"): skip include check, only exclude
+        // Leaderboard wallets: apply both include + exclude
+        let is_holder = sig.wallet_tag.as_deref().map_or(false, |t| t.contains("-holder"));
+        if is_holder {
+            if matches_exclude(&sig.market_title) { continue; }
+        } else {
+            if !matches_include(&sig.market_title) || matches_exclude(&sig.market_title) { continue; }
+        }
         // Tighter price filter: skip near-resolved markets
         let sig_price: f64 = sig.price.parse().unwrap_or(0.0);
         if sig_price < 0.05 || sig_price > 0.95 { continue; }
@@ -2799,7 +2813,7 @@ async fn cmd_monitor(
                     continue;
                 }
 
-                // Scan wallets
+                // Scan wallets (rate-limit: 100ms between calls)
                 let mut all_signals = Vec::new();
                 let mut scan_errors = 0u32;
                 for wallet in &wallets {
@@ -2810,6 +2824,7 @@ async fn cmd_monitor(
                         }
                         Err(_) => scan_errors += 1,
                     }
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                 }
 
                 // Persist signals
