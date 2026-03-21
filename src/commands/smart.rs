@@ -63,6 +63,63 @@ pub enum SmartCommand {
         depth: i32,
     },
 
+    /// Discover active markets by category or keyword
+    DiscoverMarkets {
+        /// Browse by tag: politics, crypto, economics, ai, etc.
+        #[arg(long)]
+        tag: Option<String>,
+
+        /// Search by keyword
+        #[arg(long)]
+        search: Option<String>,
+
+        /// Max results
+        #[arg(long, default_value = "10")]
+        limit: i32,
+    },
+
+    /// Find top holders (whales) on markets by category
+    DiscoverWhales {
+        /// Find whales on markets with this tag
+        #[arg(long)]
+        tag: Option<String>,
+
+        /// Find whales on a specific market (condition_id)
+        #[arg(long)]
+        market: Option<String>,
+
+        /// Minimum position size (USD) to include
+        #[arg(long, default_value = "500")]
+        min_position: f64,
+
+        /// Markets to scan per tag
+        #[arg(long, default_value = "10")]
+        limit: i32,
+
+        /// Auto-watch discovered whales
+        #[arg(long)]
+        auto_watch: bool,
+    },
+
+    /// All-in-one: discover markets + find whales + watch
+    DiscoverAuto {
+        /// Comma-separated tags to scan (e.g. "politics,crypto,economics")
+        #[arg(long, default_value = "politics,crypto")]
+        tags: String,
+
+        /// Minimum position size (USD) to include
+        #[arg(long, default_value = "500")]
+        min_position: f64,
+
+        /// Markets to scan per tag
+        #[arg(long, default_value = "10")]
+        limit: i32,
+
+        /// Auto-watch discovered whales
+        #[arg(long)]
+        auto_watch: bool,
+    },
+
     /// Add a wallet to the watch list
     Watch {
         /// Wallet address (0x...)
@@ -310,6 +367,7 @@ pub enum TelegramCommand {
 
 pub async fn execute(
     client: &data::Client,
+    gamma_client: &polymarket_client_sdk::gamma::Client,
     args: SmartArgs,
     output: OutputFormat,
     private_key: Option<&str>,
@@ -332,6 +390,16 @@ pub async fn execute(
 
         SmartCommand::WalletPnl { address } => cmd_wallet_pnl(client, &address, &output).await,
         SmartCommand::Analyze { address, depth } => cmd_analyze(client, &address, depth, &output).await,
+
+        SmartCommand::DiscoverMarkets { tag, search, limit } => {
+            cmd_discover_markets(gamma_client, tag.as_deref(), search.as_deref(), limit, &output).await
+        }
+        SmartCommand::DiscoverWhales { tag, market, min_position, limit, auto_watch } => {
+            cmd_discover_whales(client, gamma_client, tag.as_deref(), market.as_deref(), min_position, limit, auto_watch, &output).await
+        }
+        SmartCommand::DiscoverAuto { tags, min_position, limit, auto_watch } => {
+            cmd_discover_auto(client, gamma_client, &tags, min_position, limit, auto_watch, &output).await
+        }
 
         SmartCommand::Watch { address, tag } => cmd_watch(&address, tag, &output),
         SmartCommand::Unwatch { address } => cmd_unwatch(&address, &output),
@@ -911,6 +979,252 @@ async fn cmd_analyze(
             crate::output::print_json(&data)?;
         }
     }
+    Ok(())
+}
+
+// ── Market-First Discovery ───────────────────────────────────────
+
+async fn cmd_discover_markets(
+    gamma_client: &polymarket_client_sdk::gamma::Client,
+    tag: Option<&str>,
+    search: Option<&str>,
+    limit: i32,
+    output: &OutputFormat,
+) -> Result<()> {
+    use polymarket_client_sdk::gamma::types::request::{EventsRequest, SearchRequest};
+
+    if let Some(query) = search {
+        // Keyword search
+        let request = SearchRequest::builder()
+            .q(query.to_string())
+            .limit_per_type(limit)
+            .build();
+        let results = gamma_client.search(&request).await?;
+
+        let events = results.events.unwrap_or_default();
+        let mut markets: Vec<(&str, Option<f64>, Option<f64>, String)> = Vec::new();
+        for event in &events {
+            if let Some(mkts) = &event.markets {
+                for m in mkts {
+                    let question = m.question.as_deref().unwrap_or("?");
+                    let vol = m.volume_num.and_then(|v| v.to_f64());
+                    let liq = m.liquidity_num.and_then(|v| v.to_f64());
+                    let prices = m.outcome_prices.as_ref()
+                        .map(|p| p.iter().map(|v| format!("{v:.2}")).collect::<Vec<_>>().join("/"))
+                        .unwrap_or_default();
+                    markets.push((question, vol, liq, prices));
+                }
+            }
+        }
+        markets.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        match output {
+            OutputFormat::Table => {
+                println!("--- Markets matching \"{}\" ({}) ---", query, markets.len());
+                for (q, vol, liq, prices) in &markets {
+                    let vol_str = vol.map(|v| crate::output::format_decimal(rust_decimal::Decimal::from_f64_retain(v).unwrap_or_default())).unwrap_or_else(|| "—".into());
+                    let liq_str = liq.map(|v| crate::output::format_decimal(rust_decimal::Decimal::from_f64_retain(v).unwrap_or_default())).unwrap_or_else(|| "—".into());
+                    println!("  ${:<8} liq ${:<8} {}  {}", vol_str, liq_str, prices, crate::output::truncate(q, 50));
+                }
+            }
+            OutputFormat::Json => {
+                let data: Vec<_> = markets.iter().map(|(q, vol, liq, prices)| {
+                    serde_json::json!({"question": q, "volume": vol, "liquidity": liq, "prices": prices})
+                }).collect();
+                crate::output::print_json(&data)?;
+            }
+        }
+        return Ok(());
+    }
+
+    // Tag-based browse
+    let tag_slug = tag.unwrap_or("politics");
+    let request = EventsRequest::builder()
+        .limit(limit)
+        .maybe_closed(Some(false))
+        .maybe_tag_slug(Some(tag_slug.to_string()))
+        .order(vec!["volume".to_string()])
+        .build();
+
+    let events = gamma_client.events(&request).await?;
+
+    match output {
+        OutputFormat::Table => {
+            println!("--- Active Markets [{}] ({} events) ---\n", tag_slug, events.len());
+            for e in &events {
+                let title = e.title.as_deref().unwrap_or("?");
+                let vol = e.volume.and_then(|v| v.to_f64()).unwrap_or(0.0);
+                let vol_str = crate::output::format_decimal(rust_decimal::Decimal::from_f64_retain(vol).unwrap_or_default());
+                println!("  ${:<8}  {}", vol_str, crate::output::truncate(title, 55));
+
+                if let Some(mkts) = &e.markets {
+                    for m in mkts.iter().take(3) {
+                        let q = m.question.as_deref().unwrap_or("?");
+                        let prices = m.outcome_prices.as_ref()
+                            .map(|p| p.iter().map(|v| format!("{v:.2}")).collect::<Vec<_>>().join("/"))
+                            .unwrap_or_default();
+                        let cid = m.condition_id.map(|c| format!("{c}")).unwrap_or_default();
+                        println!("    {} [{}]  cid: {}...", crate::output::truncate(q, 40), prices, &cid[..18.min(cid.len())]);
+                    }
+                }
+                println!();
+            }
+        }
+        OutputFormat::Json => {
+            crate::output::print_json(&events)?;
+        }
+    }
+    Ok(())
+}
+
+async fn cmd_discover_whales(
+    client: &data::Client,
+    gamma_client: &polymarket_client_sdk::gamma::Client,
+    tag: Option<&str>,
+    market_cid: Option<&str>,
+    min_position: f64,
+    limit: i32,
+    auto_watch: bool,
+    output: &OutputFormat,
+) -> Result<()> {
+    use polymarket_client_sdk::data::types::request::HoldersRequest;
+    use polymarket_client_sdk::gamma::types::request::EventsRequest;
+
+    let mut condition_ids: Vec<alloy::primitives::B256> = Vec::new();
+    let mut market_names: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let tag_label;
+
+    if let Some(cid_str) = market_cid {
+        // Single market
+        let cid = super::parse_condition_id(cid_str)?;
+        condition_ids.push(cid);
+        tag_label = "market".to_string();
+    } else {
+        // Tag-based: get top markets
+        let tag_slug = tag.unwrap_or("politics");
+        tag_label = tag_slug.to_string();
+
+        let request = EventsRequest::builder()
+            .limit(limit)
+            .maybe_closed(Some(false))
+            .maybe_tag_slug(Some(tag_slug.to_string()))
+            .order(vec!["volume".to_string()])
+            .build();
+
+        let events = gamma_client.events(&request).await?;
+        for e in &events {
+            if let Some(mkts) = &e.markets {
+                for m in mkts {
+                    if let Some(cid) = m.condition_id {
+                        let q = m.question.as_deref().unwrap_or("?").to_string();
+                        market_names.insert(format!("{cid}"), q);
+                        condition_ids.push(cid);
+                    }
+                }
+            }
+        }
+        eprintln!("Scanning {} markets in [{}]...", condition_ids.len(), tag_slug);
+    }
+
+    if condition_ids.is_empty() {
+        println!("No markets found.");
+        return Ok(());
+    }
+
+    // Query holders for each market (batch in chunks to avoid API limits)
+    let mut whale_map: std::collections::HashMap<String, (f64, u32, Option<String>)> = std::collections::HashMap::new();
+
+    for chunk in condition_ids.chunks(5) {
+        let request = HoldersRequest::builder()
+            .markets(chunk.to_vec())
+            .limit(20)?
+            .build();
+
+        match client.holders(&request).await {
+            Ok(meta_holders) => {
+                for mh in &meta_holders {
+                    for h in &mh.holders {
+                        let addr = h.proxy_wallet.to_string().to_lowercase();
+                        let amount = h.amount.to_f64().unwrap_or(0.0);
+                        let entry = whale_map.entry(addr).or_insert((0.0, 0, h.name.clone()));
+                        entry.0 += amount;
+                        entry.1 += 1;
+                    }
+                }
+            }
+            Err(e) => eprintln!("  holders error: {e}"),
+        }
+    }
+
+    // Filter and sort by total position
+    let mut whales: Vec<(String, f64, u32, Option<String>)> = whale_map
+        .into_iter()
+        .filter(|(_, (amount, _, _))| *amount >= min_position)
+        .map(|(addr, (amount, count, name))| (addr, amount, count, name))
+        .collect();
+    whales.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+    match output {
+        OutputFormat::Table => {
+            println!("--- Top Holders [{}] ({} whales, min ${:.0}) ---\n", tag_label, whales.len(), min_position);
+            for (addr, amount, count, name) in whales.iter().take(20) {
+                let short = format!("{}...{}", &addr[..8], &addr[addr.len()-4..]);
+                let name_str = name.as_deref().unwrap_or("");
+                println!("  ${:<10.0} across {:<2} markets  {}  {}", amount, count, short, name_str);
+            }
+        }
+        OutputFormat::Json => {
+            let data: Vec<_> = whales.iter().map(|(addr, amount, count, name)| {
+                serde_json::json!({"address": addr, "total_position": amount, "markets": count, "name": name})
+            }).collect();
+            crate::output::print_json(&data)?;
+        }
+    }
+
+    // Auto-watch
+    if auto_watch {
+        let mut added = 0u32;
+        let now = Utc::now();
+        for (addr, _amount, _count, name) in &whales {
+            let wallet = WatchedWallet {
+                address: addr.clone(),
+                tag: Some(format!("{tag_label}-holder")),
+                added_at: now,
+                score: None,
+                discovery_periods: None,
+                last_seen_at: Some(now),
+                stale: Some(false),
+            };
+            if store::add_wallet(wallet)? { added += 1; }
+        }
+        println!("\nAuto-watched {added} new wallet(s) tagged \"{tag_label}-holder\"");
+    }
+
+    Ok(())
+}
+
+async fn cmd_discover_auto(
+    client: &data::Client,
+    gamma_client: &polymarket_client_sdk::gamma::Client,
+    tags: &str,
+    min_position: f64,
+    limit: i32,
+    auto_watch: bool,
+    output: &OutputFormat,
+) -> Result<()> {
+    let tag_list: Vec<&str> = tags.split(',').map(|t| t.trim()).filter(|t| !t.is_empty()).collect();
+
+    println!("=== Discover Auto: {} tag(s) ===\n", tag_list.len());
+
+    for tag in &tag_list {
+        println!("--- [{tag}] ---");
+        cmd_discover_whales(client, gamma_client, Some(tag), None, min_position, limit, auto_watch, output).await?;
+        println!();
+    }
+
+    let total = store::load_wallets()?.len();
+    println!("Total watched wallets: {total}");
+
     Ok(())
 }
 

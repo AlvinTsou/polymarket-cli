@@ -207,6 +207,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         Commands::Smart(args) => {
             commands::smart::execute(
                 &polymarket_client_sdk::data::Client::default(),
+                &polymarket_client_sdk::gamma::Client::default(),
                 args,
                 cli.output,
                 cli.private_key.as_deref(),

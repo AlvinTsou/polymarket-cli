@@ -1,214 +1,152 @@
-# Sprint 8: Smart Wallet Intelligence — Auto-Renew, PnL Tracking, Trade Analysis
+# Sprint 9: Market-First Smart Money Discovery
 
-## Goals
+## Problem
 
-1. **Auto-renew watch list** — periodically rediscover top wallets across 24h/week/month
-2. **Per-wallet PnL tracking** — track open + closed position PnL, historical snapshots
-3. **Trade pattern analysis** — understand what and why smart wallets trade
+Current approach (Sprint 1-8): Discover top wallets from leaderboard → watch → hope they trade political/economic markets.
 
-## Feature 1: Auto-Renew Watch List
+**Result**: 28 watched wallets, 250+ cycles, 0 political/economic triggers. These wallets only trade sports.
 
-### `smart discover --auto-renew`
+## New Strategy: Market-First
 
-Current `discover` only runs once. New behavior:
+Instead of wallet → market, reverse to **market → wallet**:
 
-```
-polymarket smart discover --auto-renew --threshold 90
-```
+1. Find active political/economic/AI markets on Polymarket
+2. For each market, query top holders (big positions)
+3. Watch those wallets — they're proven to trade the markets we care about
+4. When they open new positions on similar markets, trigger paper trade
 
-- Runs discover for **all 3 periods** (day, week, month)
-- Merges results: wallet appears in multiple periods → higher priority
-- Adds new wallets above threshold, **removes stale wallets** that dropped off all leaderboards
-- Tags wallets with discovery source: `"leaderboard:day"`, `"leaderboard:week"`, etc.
-
-### Integration with Monitor
-
-Add `--auto-renew` flag to `smart monitor`:
-- Every 6 hours (configurable), run auto-renew cycle within the monitor loop
-- Keeps watch list fresh without manual intervention
-
-### WatchedWallet Extension
-
-```rust
-pub struct WatchedWallet {
-    // ...existing fields...
-    pub discovery_periods: Option<Vec<String>>,  // ["day","week","month"]
-    pub last_seen_at: Option<DateTime<Utc>>,     // last time seen on leaderboard
-    pub stale: Option<bool>,                     // dropped off all leaderboards
-}
-```
-
-## Feature 2: Per-Wallet PnL Tracking
-
-### `smart wallet-pnl [ADDRESS]`
-
-New command that shows detailed PnL for a wallet:
+## API Flow
 
 ```
-polymarket smart wallet-pnl 0x... [--period week]
+EventsRequest (tag_slug="politics")
+  → active events with markets
+  → for each market condition_id:
+      HoldersRequest(markets=[condition_id])
+        → top holders with wallet addresses + position sizes
+        → filter: position size > threshold
+        → add to watch list with tag="politics-holder"
+
+Repeat for tags: "crypto", "ai", "economics", etc.
 ```
 
-**Data sources:**
-1. **Open positions** — `PositionsRequest` → `cash_pnl` per position
-2. **Closed positions** — SDK's `ClosedPositionsRequest` → `realized_pnl`
-3. **Historical snapshots** — diff stored snapshots to compute PnL deltas over time
+## New Commands
 
-**Output:**
-```
-Wallet: 0xABC...DEF (whale_01)  Score: 98.7
+### `smart discover-markets`
 
-Open Positions (5):
-  Market                        Outcome  Size     Entry   Now    PnL
-  Will X win election?          Yes      $500     0.45    0.62   +$188.89
-  ...
-
-Closed Positions (recent 10):
-  Market                        Outcome  Entry    Exit    PnL      ROI
-  Bitcoin > 100k by July?       Yes      0.30     0.85    +$183.33 +183%
-  ...
-
-Summary:
-  Open PnL:     +$342.15 (5 positions)
-  Realized PnL: +$1,204.50 (23 closed)
-  Total PnL:    +$1,546.65
-  Win Rate:     78% (18/23 closed)
-```
-
-### PnL Snapshot Storage
+Find high-volume active markets by category:
 
 ```
-~/.config/polymarket/smart/pnl_history/{address}.jsonl
+polymarket smart discover-markets --tag politics --limit 10
+polymarket smart discover-markets --search "trump tariff" --limit 5
 ```
 
-Each scan cycle appends:
-```json
-{"timestamp":"...","open_pnl":342.15,"realized_pnl":1204.50,"position_count":5}
+Output:
+```
+--- Active Markets (politics) ---
+  $2.3M vol  Trump wins 2028?           YES: 0.35  NO: 0.65
+  $1.8M vol  Fed rate cut by June?      YES: 0.72  NO: 0.28
+  $890K vol  TikTok ban upheld?         YES: 0.45  NO: 0.55
 ```
 
-This builds a time-series for equity curves per wallet.
+### `smart discover-whales`
 
-## Feature 3: Trade Pattern Analysis
-
-### `smart analyze [ADDRESS]`
-
-Understand **what** and **why** smart wallets trade:
+Find top holders on a specific market or across markets by tag:
 
 ```
-polymarket smart analyze 0x... [--depth 50]
+polymarket smart discover-whales --tag politics --min-position 500 --auto-watch
+polymarket smart discover-whales --market 0xABC... --limit 20
 ```
 
-**Analysis dimensions:**
+Flow:
+1. Get top markets by tag (or use specific market condition_id)
+2. For each market, call HoldersRequest
+3. Rank wallets by total position size across markets
+4. Auto-watch those above threshold
 
-#### A. Market Category Distribution
-Group positions by market keywords → detect specialization:
+Output:
 ```
-Category breakdown:
-  Politics/Elections  45% (12 positions, +$800)
-  Crypto/Bitcoin      30% (8 positions, +$350)
-  AI/Tech             15% (4 positions, +$120)
-  Other               10% (3 positions, -$50)
-```
+--- Top Holders (politics markets, 8 markets scanned) ---
+  0xABC...DEF  $12,500 across 5 markets  (politics-holder)
+  0x123...789  $8,200 across 3 markets   (politics-holder)
+  0xFED...321  $5,100 across 2 markets   (politics-holder)
 
-#### B. Trading Style Profile
-Compute from position data:
-```
-Trading Style:
-  Avg position size:  $150
-  Avg entry price:    0.35 (buys low-probability outcomes)
-  Hold time:          ~5 days (from snapshot history)
-  Concentration:      3 markets = 60% of portfolio (concentrated)
-  Direction bias:     72% YES positions
-  Conviction:         High (avg size > $100, few positions)
+Auto-watched 3 wallet(s) with position >= $500
 ```
 
-#### C. Recent Moves (from signals history)
-```
-Recent Activity (7 days):
-  03-19 14:30  NEW    HIGH  "Will X happen?"         YES  $200 @ 0.35
-  03-18 09:15  CLOSE  —     "Bitcoin > 90k March?"   YES  exit @ 0.92 (+$180)
-  03-17 22:00  INCREASE MED "AI regulation bill?"    NO   +$50 @ 0.22
-```
+### `smart discover-auto`
 
-#### D. Contrarian vs Consensus Indicator
-Compare wallet's positions against current market prices:
+All-in-one: discover markets + find whales + watch + configure monitor:
+
 ```
-Contrarian Score: 7/10
-  - 60% of positions are on outcomes priced < 0.40
-  - Betting against consensus on 3 markets
+polymarket smart discover-auto \
+  --tags "politics,crypto,economics" \
+  --min-position 500 \
+  --markets-per-tag 10 \
+  --auto-watch
 ```
-
-### Implementation: Category Detection
-
-Simple keyword-based categorization (no ML needed):
-```rust
-const CATEGORIES: &[(&str, &[&str])] = &[
-    ("Politics", &["election", "president", "congress", "vote", "trump", "biden"]),
-    ("Crypto", &["bitcoin", "ethereum", "btc", "eth", "crypto", "defi"]),
-    ("AI/Tech", &["ai", "artificial", "openai", "google", "apple", "tech"]),
-    ("Sports", &["nba", "nfl", "soccer", "championship", "world cup"]),
-    ("Economy", &["gdp", "inflation", "fed", "interest rate", "recession"]),
-];
-```
-
-### HTML Report Integration
-
-Add to `smart report`:
-- Per-wallet P&L cards with mini equity curves
-- Category distribution pie chart (inline SVG)
-- Top 5 wallets ranked by total PnL
 
 ## Implementation Steps
 
-### Step 1: WatchedWallet extension + serde compat
-- Add `discovery_periods`, `last_seen_at`, `stale` fields (Option + serde(default))
+### Step 1: Gamma client integration
 
-### Step 2: Multi-period discover
-- `cmd_discover` with `--auto-renew` flag
-- Query day + week + month leaderboards
-- Merge/dedup by address, tag with periods
+Currently `src/commands/smart.rs` only uses `data::Client`. Need to also use `gamma::Client` for market/event search.
 
-### Step 3: Stale wallet detection
-- If wallet not seen on any leaderboard for 7 days → mark stale
-- `smart list` shows stale indicator
+- Check how gamma client is initialized in existing code
+- Pass gamma client to new smart commands
 
-### Step 4: PnL snapshot storage
-- New `pnl_history/` directory in smart store
-- Append PnL snapshot per wallet per scan cycle
-- `load_pnl_history(address)` function
+### Step 2: `smart discover-markets` command
 
-### Step 5: `smart wallet-pnl` command
-- Fetch open positions + closed positions from API
-- Compute summary stats
-- Table output
+- Use `EventsRequest` with `tag_slug` for category browsing
+- Use `SearchRequest` for keyword search
+- Display: volume, liquidity, prices, question
+- Sort by volume descending
 
-### Step 6: `smart analyze` command
-- Category detection from market titles
-- Trading style metrics computation
-- Recent moves from signal history
-- Contrarian score
+### Step 3: `smart discover-whales` command
 
-### Step 7: Monitor integration
-- Auto-renew every N hours in monitor loop
-- PnL snapshot recording per scan cycle
+- Get top markets by tag (from Step 2)
+- For each market, call `HoldersRequest` with condition_id
+- Aggregate: group by wallet across markets
+- Rank by total position size
+- `--auto-watch` adds to watch list with tag like `"politics-holder"`
 
-### Step 8: Report enhancement
-- Per-wallet PnL cards
-- Category distribution SVG
+### Step 4: `smart discover-auto` command
 
-### Step 9: Build + Test
+- Combine Steps 2+3: for each tag, find markets → find holders → watch
+- Print summary
 
-## SDK API Calls Needed
+### Step 5: WatchedWallet tag enhancement
 
-| Feature | API | Existing? |
-|---------|-----|-----------|
-| Multi-period leaderboard | `TraderLeaderboardRequest` | Yes, used in discover |
-| Open positions + PnL | `PositionsRequest` | Yes, used in scan |
-| Closed positions | Needs `ClosedPositionsRequest` | Not yet used |
-| Trade history | Needs `TradesRequest` | Not yet used |
-| Portfolio value | `ValueRequest` | Yes, used in scorer |
+- Tags like `"politics-holder"`, `"crypto-holder"` for market-first wallets
+- vs existing `"leaderboard"` for performance-first wallets
 
-## Non-goals
+### Step 6: Monitor knows both strategies
 
-- ML-based trade prediction
-- Real-time position mirroring (copy-trade)
-- Cross-chain wallet tracking
+- Market-first wallets trigger on their specialty markets
+- Leaderboard wallets trigger on any matching market
+- Both use the same include/exclude filters
+
+### Step 7: Build + Test
+
+## Data Model
+
+```
+smart discover-markets --tag politics
+  → EventsRequest(tag_slug="politics", limit=10, order=["volume"])
+  → for each event.markets:
+      display question, volume, prices
+
+smart discover-whales --tag politics --min-position 500
+  → same as above to get market condition_ids
+  → HoldersRequest(markets=[cid1, cid2, ...], limit=50)
+  → aggregate wallets, filter by min-position
+  → store::add_wallet() with tag="politics-holder"
+```
+
+## Expected Outcome
+
+Instead of 28 sports-focused wallets, we'll have wallets like:
+- 5-10 wallets holding large positions on Trump/election markets
+- 5-10 wallets active in crypto long-term markets
+- 3-5 wallets in economics (Fed, GDP, recession)
+
+When these wallets open NEW positions on similar markets, the monitor triggers — because they're proven to trade exactly the markets we care about.
