@@ -2364,27 +2364,265 @@ fn build_live_dashboard() -> String {
         (row, pnl)
     };
 
-    let mut paper_rows = String::new();
     let mut live_rows = String::new();
+    let mut open_rows = String::new();
+    let mut closed_rows = String::new();
+    let mut history_rows_vec: Vec<(chrono::DateTime<Utc>, String)> = Vec::new();
+    let mut equity_points: Vec<(i64, f64)> = Vec::new();
+    let mut paper_open_invested = 0.0f64;
+    let mut paper_open_pnl = 0.0f64;
+    let mut paper_closed_count = 0u32;
+    let mut paper_closed_wins = 0u32;
+    let mut paper_closed_pnl_values: Vec<f64> = Vec::new();
+    let mut paper_closed_hold_hours: Vec<f64> = Vec::new();
+    let utc_now = Utc::now();
 
     for r in &follows {
-        let (row, pnl) = build_follow_row(r, &price_map);
-        if r.dry_run {
-            paper_rows.push_str(&row);
-            paper_invested += r.amount_usdc;
-            paper_pnl += pnl;
-            paper_count += 1;
-            if pnl > 0.0 { paper_wins += 1; }
-        } else {
+        if !r.dry_run {
+            let (row, pnl) = build_follow_row(r, &price_map);
             live_rows.push_str(&row);
             live_invested += r.amount_usdc;
             live_pnl += pnl;
+            continue;
+        }
+
+        let entry = r.effective_entry();
+        paper_invested += r.amount_usdc;
+        paper_count += 1;
+
+        // Period classification for trade history filter
+        let age_hours = (utc_now - r.timestamp).num_hours();
+        let mut periods = Vec::new();
+        if age_hours < 24 { periods.push("today"); }
+        if age_hours < 168 { periods.push("week"); }
+        if age_hours < 720 { periods.push("month"); }
+        let p_attr = periods.join(" ");
+
+        if r.is_open() {
+            let current = price_map.get(&r.condition_id).copied().unwrap_or(entry);
+            let pnl = calc_open_pnl(&r.side, r.amount_usdc, entry, current);
+            let roi = if r.amount_usdc > 0.0 { pnl / r.amount_usdc * 100.0 } else { 0.0 };
+            let pnl_cls = if pnl >= 0.0 { "text-green" } else { "text-red" };
+            paper_pnl += pnl;
+            if pnl > 0.0 { paper_wins += 1; }
+            paper_open_invested += r.amount_usdc;
+            paper_open_pnl += pnl;
+
+            // Tab 1: Open Positions
+            open_rows.push_str(&format!(
+                "<tr><td>{}</td><td>{}</td><td>{}</td><td>{:.3}</td><td>{:.3}</td><td>${:.2}</td><td class='{}'>{:+.2}</td><td class='{}'>{:+.1}%</td></tr>",
+                html_escape(&r.market_title), html_escape(&r.outcome), html_escape(&r.side),
+                entry, current, r.amount_usdc, pnl_cls, pnl, pnl_cls, roi
+            ));
+
+            // Tab 2: Trade History
+            history_rows_vec.push((r.timestamp, format!(
+                "<tr data-p='{}'><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{:.3}</td><td>${:.2}</td><td style='color:#94a3b8'>OPEN</td></tr>",
+                p_attr, r.timestamp.format("%m-%d %H:%M"), html_escape(&r.side),
+                html_escape(&r.market_title), html_escape(&r.outcome), entry, r.amount_usdc
+            )));
+        } else {
+            let pnl = r.realized_pnl.unwrap_or(0.0);
+            let exit = r.exit_price.unwrap_or(entry);
+            let roi = if r.amount_usdc > 0.0 { pnl / r.amount_usdc * 100.0 } else { 0.0 };
+            let pnl_cls = if pnl >= 0.0 { "text-green" } else { "text-red" };
+            let row_cls = if pnl >= 0.0 { "row-win" } else { "row-loss" };
+            paper_pnl += pnl;
+            if pnl > 0.0 { paper_wins += 1; }
+            paper_closed_count += 1;
+            if pnl > 0.0 { paper_closed_wins += 1; }
+            paper_closed_pnl_values.push(pnl);
+
+            let close_time = r.closed_at.unwrap_or(utc_now);
+            let hold_h = (close_time - r.timestamp).num_hours() as f64;
+            paper_closed_hold_hours.push(hold_h);
+            let hold_str = if hold_h < 1.0 {
+                format!("{}m", (close_time - r.timestamp).num_minutes())
+            } else if hold_h < 24.0 {
+                format!("{:.0}h", hold_h)
+            } else {
+                format!("{:.0}d {:.0}h", (hold_h / 24.0).floor(), hold_h % 24.0)
+            };
+
+            // Tab 3: Position History
+            closed_rows.push_str(&format!(
+                "<tr class='{}'><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{:.3}</td><td>{:.3}</td><td class='{}'>{:+.2}</td><td class='{}'>{:+.1}%</td><td>{}</td></tr>",
+                row_cls, r.timestamp.format("%m-%d %H:%M"),
+                r.closed_at.map_or("—".into(), |t| t.format("%m-%d %H:%M").to_string()),
+                html_escape(&r.market_title), html_escape(&r.side),
+                entry, exit, pnl_cls, pnl, pnl_cls, roi, hold_str
+            ));
+
+            // Tab 2: Trade History
+            let status_str = r.status.as_ref().map(|s| s.to_string()).unwrap_or_else(|| "CLOSED".to_string());
+            history_rows_vec.push((r.timestamp, format!(
+                "<tr data-p='{}'><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{:.3}</td><td>${:.2}</td><td style='color:#60a5fa'>{}</td></tr>",
+                p_attr, r.timestamp.format("%m-%d %H:%M"), html_escape(&r.side),
+                html_escape(&r.market_title), html_escape(&r.outcome), entry, r.amount_usdc, status_str
+            )));
+
+            // Equity curve point
+            equity_points.push((close_time.timestamp_millis(), pnl));
         }
     }
+
+    // Sort trade history newest first
+    history_rows_vec.sort_by(|a, b| b.0.cmp(&a.0));
+    let history_rows: String = history_rows_vec.into_iter().map(|(_, r)| r).collect();
+
+    // Build equity curve (cumulative PnL)
+    equity_points.sort_by_key(|p| p.0);
+    let mut cumulative = 0.0f64;
+    let eq_cumulative: Vec<(i64, f64)> = equity_points.iter().map(|&(t, pnl)| {
+        cumulative += pnl;
+        (t, cumulative)
+    }).collect();
 
     let total_invested = paper_invested + live_invested;
     let total_pnl = paper_pnl + live_pnl;
     let paper_win_rate = if paper_count > 0 { paper_wins as f64 / paper_count as f64 * 100.0 } else { 0.0 };
+    let closed_win_rate = if paper_closed_count > 0 { paper_closed_wins as f64 / paper_closed_count as f64 * 100.0 } else { 0.0 };
+    let avg_pnl = if !paper_closed_pnl_values.is_empty() { paper_closed_pnl_values.iter().sum::<f64>() / paper_closed_pnl_values.len() as f64 } else { 0.0 };
+    let best_trade = paper_closed_pnl_values.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    let worst_trade = paper_closed_pnl_values.iter().cloned().fold(f64::INFINITY, f64::min);
+    let avg_hold = if !paper_closed_hold_hours.is_empty() { paper_closed_hold_hours.iter().sum::<f64>() / paper_closed_hold_hours.len() as f64 } else { 0.0 };
+    let avg_hold_str = if avg_hold < 1.0 { "&lt;1h".to_string() } else if avg_hold < 24.0 { format!("{:.0}h", avg_hold) } else { format!("{:.0}d", avg_hold / 24.0) };
+
+    let equity_svg = build_equity_curve_svg(&eq_cumulative);
+    let paper_open_count = follows.iter().filter(|r| r.dry_run && r.is_open()).count();
+
+    // Build paper section with exchange-style tabs
+    let paper_section = if paper_count == 0 {
+        "<h2>Paper Trading <span class='count'>0</span></h2><div class='section'><p class='empty'>No paper trades yet. Run monitor with --paper-trade.</p></div>".to_string()
+    } else {
+        let tab_css = r#"<style>
+.tab-radio,.period-radio{display:none}
+.tab-nav{display:flex;gap:0;border-bottom:2px solid #1e293b;margin-bottom:1rem}
+.tab-nav label{padding:.5rem 1rem;cursor:pointer;color:#64748b;font-size:.8rem;font-weight:600;text-transform:uppercase;letter-spacing:.05em;border-bottom:2px solid transparent;margin-bottom:-2px;transition:all .2s}
+.tab-nav label:hover{color:#94a3b8}
+.tab-panel{display:none}
+#tab-positions:checked~.tab-nav label[for='tab-positions'],
+#tab-history:checked~.tab-nav label[for='tab-history'],
+#tab-closed:checked~.tab-nav label[for='tab-closed'],
+#tab-perf:checked~.tab-nav label[for='tab-perf']{color:#e2e8f0;border-bottom-color:#4ade80}
+#tab-positions:checked~.tab-panels #panel-positions,
+#tab-history:checked~.tab-panels #panel-history,
+#tab-closed:checked~.tab-panels #panel-closed,
+#tab-perf:checked~.tab-panels #panel-perf{display:block}
+.period-nav{display:flex;gap:.5rem;margin-bottom:.8rem}
+.period-nav label{padding:2px 10px;border-radius:3px;cursor:pointer;color:#64748b;font-size:.7rem;background:#1e293b;transition:all .2s}
+.period-nav label:hover{color:#94a3b8}
+#period-all:checked~.period-nav label[for='period-all'],
+#period-today:checked~.period-nav label[for='period-today'],
+#period-week:checked~.period-nav label[for='period-week'],
+#period-month:checked~.period-nav label[for='period-month']{color:#e2e8f0;background:#334155}
+#period-today:checked~.period-wrap tbody tr:not([data-p~='today']),
+#period-week:checked~.period-wrap tbody tr:not([data-p~='week']),
+#period-month:checked~.period-wrap tbody tr:not([data-p~='month']){display:none}
+.row-win{background:rgba(74,222,128,0.04)}
+.row-loss{background:rgba(248,113,113,0.04)}
+.perf-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:.6rem}
+.perf-card{background:#111827;border-radius:8px;padding:.8rem;border:1px solid #1e293b;text-align:center}
+.perf-label{color:#64748b;font-size:.65rem;text-transform:uppercase;letter-spacing:.05em}
+.perf-val{font-size:1.3rem;font-weight:700;margin-top:.2rem}
+</style>"#;
+
+        // Tab 1: Open Positions
+        let tab1 = if open_rows.is_empty() {
+            "<p class='empty'>No open positions.</p>".to_string()
+        } else {
+            let oc = if paper_open_pnl >= 0.0 { "#4ade80" } else { "#f87171" };
+            format!(
+                "<table><thead><tr><th>Market</th><th>Outcome</th><th>Side</th><th>Entry</th><th>Current</th><th>Size</th><th>Unrealized PnL</th><th>ROI</th></tr></thead><tbody>{}</tbody></table>\
+                 <p style='margin-top:.5rem;color:#94a3b8;font-size:.8rem'>{} positions | ${:.2} invested | Unrealized: <span style='color:{}'>{:+.2}</span></p>",
+                open_rows, paper_open_count, paper_open_invested, oc, paper_open_pnl
+            )
+        };
+
+        // Tab 2: Trade History with period filter
+        let tab2 = if history_rows.is_empty() {
+            "<p class='empty'>No trades yet.</p>".to_string()
+        } else {
+            format!(
+                "<input type='radio' name='period' id='period-all' checked class='period-radio'>\
+                 <input type='radio' name='period' id='period-today' class='period-radio'>\
+                 <input type='radio' name='period' id='period-week' class='period-radio'>\
+                 <input type='radio' name='period' id='period-month' class='period-radio'>\
+                 <div class='period-nav'>\
+                   <label for='period-all'>All</label>\
+                   <label for='period-today'>Today</label>\
+                   <label for='period-week'>Week</label>\
+                   <label for='period-month'>Month</label>\
+                 </div>\
+                 <div class='period-wrap'>\
+                 <table><thead><tr><th>Time</th><th>Side</th><th>Market</th><th>Outcome</th><th>Entry</th><th>Amount</th><th>Status</th></tr></thead><tbody>{}</tbody></table>\
+                 </div>",
+                history_rows
+            )
+        };
+
+        // Tab 3: Position History (closed only)
+        let tab3 = if closed_rows.is_empty() {
+            "<p class='empty'>No closed positions yet.</p>".to_string()
+        } else {
+            format!(
+                "<table><thead><tr><th>Opened</th><th>Closed</th><th>Market</th><th>Side</th><th>Entry</th><th>Exit</th><th>PnL</th><th>ROI</th><th>Hold</th></tr></thead><tbody>{}</tbody></table>",
+                closed_rows
+            )
+        };
+
+        // Tab 4: Performance
+        let best_str = if paper_closed_pnl_values.is_empty() { "—".to_string() } else { format!("${:+.2}", best_trade) };
+        let worst_str = if paper_closed_pnl_values.is_empty() { "—".to_string() } else { format!("${:+.2}", worst_trade) };
+        let best_color = if paper_closed_pnl_values.is_empty() || best_trade >= 0.0 { "#4ade80" } else { "#f87171" };
+        let worst_color = if paper_closed_pnl_values.is_empty() || worst_trade >= 0.0 { "#4ade80" } else { "#f87171" };
+        let pnl_c = if paper_pnl >= 0.0 { "#4ade80" } else { "#f87171" };
+        let avg_c = if avg_pnl >= 0.0 { "#4ade80" } else { "#f87171" };
+        let tab4 = format!(
+            "<div class='perf-cards'>\
+               <div class='perf-card'><div class='perf-label'>Total Trades</div><div class='perf-val'>{}</div></div>\
+               <div class='perf-card'><div class='perf-label'>Win Rate</div><div class='perf-val'>{:.0}%</div></div>\
+               <div class='perf-card'><div class='perf-label'>Total PnL</div><div class='perf-val' style='color:{}'>${:+.2}</div></div>\
+               <div class='perf-card'><div class='perf-label'>Avg PnL</div><div class='perf-val' style='color:{}'>${:+.2}</div></div>\
+               <div class='perf-card'><div class='perf-label'>Best Trade</div><div class='perf-val' style='color:{}'>{}</div></div>\
+               <div class='perf-card'><div class='perf-label'>Worst Trade</div><div class='perf-val' style='color:{}'>{}</div></div>\
+               <div class='perf-card'><div class='perf-label'>Avg Hold</div><div class='perf-val'>{}</div></div>\
+               <div class='perf-card'><div class='perf-label'>Closed</div><div class='perf-val'>{}</div></div>\
+             </div>\
+             <div style='margin-top:1rem'>{}</div>",
+            paper_count, closed_win_rate,
+            pnl_c, paper_pnl,
+            avg_c, avg_pnl,
+            best_color, best_str,
+            worst_color, worst_str,
+            avg_hold_str, paper_closed_count,
+            equity_svg
+        );
+
+        format!(
+            "{}<h2>Paper Trading <span class='count'>{}</span></h2>\
+             <div class='section'>\
+             <input type='radio' name='paper-tab' id='tab-positions' checked class='tab-radio'>\
+             <input type='radio' name='paper-tab' id='tab-history' class='tab-radio'>\
+             <input type='radio' name='paper-tab' id='tab-closed' class='tab-radio'>\
+             <input type='radio' name='paper-tab' id='tab-perf' class='tab-radio'>\
+             <div class='tab-nav'>\
+               <label for='tab-positions'>Positions ({})</label>\
+               <label for='tab-history'>Trade History</label>\
+               <label for='tab-closed'>Closed ({})</label>\
+               <label for='tab-perf'>Performance</label>\
+             </div>\
+             <div class='tab-panels'>\
+               <div class='tab-panel' id='panel-positions'>{}</div>\
+               <div class='tab-panel' id='panel-history'>{}</div>\
+               <div class='tab-panel' id='panel-closed'>{}</div>\
+               <div class='tab-panel' id='panel-perf'>{}</div>\
+             </div>\
+             </div>",
+            tab_css, paper_count, paper_open_count, paper_closed_count,
+            tab1, tab2, tab3, tab4
+        )
+    };
 
     // -- Odds watches table --
     let odds_rows: String = odds_watches
@@ -2508,10 +2746,7 @@ tr:hover td{{background:#111827aa}}
 {signals_section}
 </div>
 
-<h2>Paper Trades <span class="count">{paper_count}</span></h2>
-<div class="section">
 {paper_section}
-</div>
 
 <h2>Live Trades <span class="count">{live_count}</span></h2>
 <div class="section">
@@ -2555,16 +2790,7 @@ tr:hover td{{background:#111827aa}}
         } else {
             format!("<table><thead><tr><th>Time</th><th>Type</th><th>Conf</th><th>Market</th><th>Outcome</th><th>Price</th><th>Size</th></tr></thead><tbody>{signals_rows}</tbody></table>")
         },
-        paper_section = if paper_rows.is_empty() {
-            "<p class='empty'>No paper trades yet. Run monitor with --paper-trade.</p>".into()
-        } else {
-            let paper_roi = if paper_invested > 0.0 { paper_pnl / paper_invested * 100.0 } else { 0.0 };
-            let pc = if paper_pnl >= 0.0 { "#4ade80" } else { "#f87171" };
-            format!(
-                "<table><thead><tr><th>Time</th><th>Status</th><th>Side</th><th>Market</th><th>Invested</th><th>Entry</th><th>Now/Exit</th><th>PnL</th><th>ROI</th></tr></thead><tbody>{paper_rows}</tbody></table>\
-                 <p style='margin-top:.5rem;color:#94a3b8;font-size:.8rem'>Paper total: ${paper_invested:.2} | PnL: <span style='color:{pc}'>{paper_pnl:+.2}</span> ({paper_roi:+.1}%) | Win rate: {paper_win_rate:.0}%</p>"
-            )
-        },
+        paper_section = paper_section,
         live_section = if live_rows.is_empty() {
             "<p class='empty'>No live trades yet.</p>".into()
         } else {

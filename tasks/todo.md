@@ -1,38 +1,49 @@
 # PMCC Smart Money System — TODO
 
-## Sprint 1-8: COMPLETE (see git history)
+## Sprint 1-9: COMPLETE (see git history)
 
-## Sprint 9：Market-First Smart Money Discovery
+## Sprint 10：Paper Trade Dashboard — Exchange-Style Tabs — COMPLETE
 
-### Step 1: Gamma client integration
-- [ ] Pass gamma::Client to smart command execute()
-- [ ] Import gamma request types (EventsRequest, SearchRequest)
+### Step 1: Refactor data preparation
+- [x] Split paper trades into open vs closed in `build_live_dashboard()`
+- [x] Compute per-trade: unrealized PnL, realized PnL, hold time, ROI
+- [x] Build equity curve points for performance tab
 
-### Step 2: `smart discover-markets`
-- [ ] `--tag` flag: browse by category (politics, crypto, economics, ai)
-- [ ] `--search` flag: keyword search
-- [ ] Display: question, volume, liquidity, prices, condition_id
-- [ ] Sort by volume descending
+### Step 2: Tab 1 — Open Positions (倉位)
+- [x] Table: Market, Outcome, Side, Entry, Current, Size, Unrealized PnL, ROI%
+- [x] Summary row: total invested, total unrealized PnL
 
-### Step 3: `smart discover-whales`
-- [ ] `--tag` flag: scan top markets in category → find top holders
-- [ ] `--market` flag: scan specific market condition_id
-- [ ] HoldersRequest for each market's condition_id
-- [ ] Aggregate wallets across markets, rank by total position size
-- [ ] `--min-position` threshold filter
-- [ ] `--auto-watch` adds with tag "politics-holder" etc
+### Step 3: Tab 2 — Trade History (歷史成交)
+- [x] All paper trades newest first
+- [x] Columns: Time, Side, Market, Outcome, Entry, Amount, Status
+- [x] Period filter (all/today/week/month via CSS data attributes)
 
-### Step 4: `smart discover-auto`
-- [ ] `--tags` multi-tag scan (politics,crypto,economics)
-- [ ] Combines discover-markets + discover-whales
-- [ ] `--auto-watch` auto-adds top holders
-- [ ] Summary output
+### Step 4: Tab 3 — Position History (倉位歷史)
+- [x] Closed trades only
+- [x] Columns: Open Time, Close Time, Market, Side, Entry, Exit, Realized PnL, ROI%, Hold Time
+- [x] Color-coded green/red rows
 
-### Step 5: Build + Test
-- [ ] `cargo check` pass
-- [ ] `cargo test` pass
-- [ ] Manual test: `smart discover-markets --tag politics`
-- [ ] Manual test: `smart discover-whales --tag politics --auto-watch`
-- [ ] Manual test: `smart discover-auto --tags "politics,crypto"`
-- [ ] Release binary
-- [ ] Restart monitor + dashboard
+### Step 5: Tab 4 — Performance (績效)
+- [x] Summary cards: Total Trades, Win Rate, Total PnL, Avg PnL, Best/Worst Trade, Avg Hold Time
+- [x] Equity curve SVG (reuse `build_equity_curve_svg()`)
+
+### Step 6: CSS tabs + styling
+- [x] CSS-only tabs (radio + :checked + sibling selectors)
+- [x] Dark theme consistent with existing dashboard
+- [x] No JavaScript
+
+### Step 7: Keep Live Trades section unchanged
+- [x] Live trades section untouched
+
+### Step 8: Build + Test
+- [x] `cargo check` pass
+- [x] `cargo test` — skipped (no unit tests for dashboard HTML)
+- [x] Release binary built
+- [x] Dashboard HTML verified (60KB, all tabs + period filter + perf cards + equity curve)
+- [ ] Dashboard LaunchAgent restart (port binding issue — pre-existing, not related to S10)
+
+## Pending items from previous sprints
+- Monitor running with 237 wallets (politics/economics/ai holders)
+- 4 paper trades open (Pakistan, Exponent, Trump, Atlanta)
+- 94 API errors (rate limiting) — 100ms delay added, pending verification
+- Dashboard LaunchAgent keeps exiting — needs investigation
