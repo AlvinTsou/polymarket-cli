@@ -240,6 +240,10 @@ pub struct FollowRecord {
     pub realized_pnl: Option<f64>,
     #[serde(default)]
     pub position_id: Option<String>,
+    #[serde(default)]
+    pub entry_reason: Option<String>,
+    #[serde(default)]
+    pub exit_reason: Option<String>,
 }
 
 impl FollowRecord {
@@ -365,4 +369,11 @@ pub struct OddsAlert {
     pub current_price: f64,
     pub change_pct: f64,
     pub threshold_pct: f64,
+}
+
+/// Price snapshot for open positions (recorded each monitor cycle).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PriceSnapshot {
+    pub timestamp: DateTime<Utc>,
+    pub prices: std::collections::HashMap<String, f64>, // "condition_id:outcome" -> midpoint
 }

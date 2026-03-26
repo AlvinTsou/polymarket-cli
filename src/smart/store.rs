@@ -4,8 +4,8 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 
 use super::{
-    FollowRecord, MonitorConfig, OddsAlert, OddsWatch, Signal, SmartScore, TelegramConfig,
-    WalletPnlSnapshot, WalletSnapshot, WatchedWallet,
+    FollowRecord, MonitorConfig, OddsAlert, OddsWatch, PriceSnapshot, Signal, SmartScore,
+    TelegramConfig, WalletPnlSnapshot, WalletSnapshot, WatchedWallet,
 };
 
 fn smart_dir() -> Result<PathBuf> {
@@ -207,6 +207,7 @@ pub fn close_follow_position(
     condition_id: &str,
     outcome: &str,
     exit_price: f64,
+    reason: &str,
 ) -> Result<bool> {
     let mut records = load_follow_records()?;
     let now = chrono::Utc::now();
@@ -226,6 +227,7 @@ pub fn close_follow_position(
             r.closed_at = Some(now);
             r.exit_price = Some(exit_price);
             r.realized_pnl = Some(pnl);
+            r.exit_reason = Some(reason.to_string());
             closed = true;
             break; // close oldest matching first
         }
@@ -254,13 +256,14 @@ pub fn load_all_snapshots() -> Result<Vec<WalletSnapshot>> {
 }
 
 /// Build a map of (condition_id) -> cur_price from all snapshots.
-pub fn current_price_map() -> Result<std::collections::HashMap<String, f64>> {
+/// Price map keyed by (condition_id, outcome) to distinguish Yes vs No.
+pub fn current_price_map() -> Result<std::collections::HashMap<(String, String), f64>> {
     let snapshots = load_all_snapshots()?;
     let mut map = std::collections::HashMap::new();
     for snap in &snapshots {
         for pos in &snap.positions {
             if let Ok(price) = pos.cur_price.parse::<f64>() {
-                map.insert(pos.condition_id.clone(), price);
+                map.insert((pos.condition_id.clone(), pos.outcome.clone()), price);
             }
         }
     }
@@ -417,4 +420,69 @@ pub fn update_wallet(address: &str, updater: impl FnOnce(&mut WatchedWallet)) ->
         save_wallets(&wallets)?;
     }
     Ok(found)
+}
+
+// ── Position price history ──────────────────────────────────────
+
+pub fn append_price_snapshot(snapshot: &PriceSnapshot) -> Result<()> {
+    use std::io::Write;
+    let path = smart_dir()?.join("price_history.jsonl");
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)?;
+    writeln!(file, "{}", serde_json::to_string(snapshot)?)?;
+    Ok(())
+}
+
+pub fn load_price_history(since: chrono::DateTime<chrono::Utc>) -> Result<Vec<PriceSnapshot>> {
+    let path = smart_dir()?.join("price_history.jsonl");
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let data = fs::read_to_string(&path)?;
+    Ok(data
+        .lines()
+        .filter(|l| !l.is_empty())
+        .filter_map(|l| serde_json::from_str::<PriceSnapshot>(l).ok())
+        .filter(|s| s.timestamp >= since)
+        .collect())
+}
+
+/// Prune price history older than `keep_hours`.
+pub fn prune_price_history(keep_hours: i64) -> Result<()> {
+    let cutoff = chrono::Utc::now() - chrono::Duration::hours(keep_hours);
+    let path = smart_dir()?.join("price_history.jsonl");
+    if !path.exists() {
+        return Ok(());
+    }
+    let data = fs::read_to_string(&path)?;
+    let kept: Vec<&str> = data
+        .lines()
+        .filter(|l| !l.is_empty())
+        .filter(|l| {
+            serde_json::from_str::<PriceSnapshot>(l)
+                .map(|s| s.timestamp >= cutoff)
+                .unwrap_or(false)
+        })
+        .collect();
+    fs::write(&path, kept.join("\n") + if kept.is_empty() { "" } else { "\n" })?;
+    Ok(())
+}
+
+// ── Peak ROI tracker (trailing stop) ────────────────────────────
+
+pub fn load_peak_roi() -> Result<std::collections::HashMap<String, f64>> {
+    let path = smart_dir()?.join("peak_roi.json");
+    if !path.exists() {
+        return Ok(std::collections::HashMap::new());
+    }
+    let data = fs::read_to_string(&path)?;
+    Ok(serde_json::from_str(&data).unwrap_or_default())
+}
+
+pub fn save_peak_roi(peaks: &std::collections::HashMap<String, f64>) -> Result<()> {
+    let path = smart_dir()?.join("peak_roi.json");
+    fs::write(&path, serde_json::to_string_pretty(peaks)?)?;
+    Ok(())
 }

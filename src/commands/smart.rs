@@ -12,8 +12,8 @@ use crate::output::smart::{
 };
 use crate::smart::tracker::PositionChange;
 use crate::smart::{
-    AggregatedSignal, FollowRecord, OddsWatch, Signal, SignalConfidence, SmartScore,
-    TelegramConfig, WatchedWallet, odds, scorer, signals, store, tracker,
+    AggregatedSignal, FollowRecord, OddsWatch, PriceSnapshot, Signal, SignalConfidence,
+    SmartScore, TelegramConfig, WatchedWallet, odds, scorer, signals, store, tracker,
 };
 
 #[derive(Args)]
@@ -1352,7 +1352,7 @@ async fn cmd_scan(
         if matches!(sig.signal_type, crate::smart::SignalType::ClosePosition) {
             let exit_price: f64 = sig.price.parse().unwrap_or(0.0);
             if exit_price > 0.0 {
-                match store::close_follow_position(&sig.condition_id, &sig.outcome, exit_price) {
+                match store::close_follow_position(&sig.condition_id, &sig.outcome, exit_price, "scan: whale ClosePosition") {
                     Ok(true) => {
                         eprintln!(
                             "Closed follow position: {} [{}] @ {exit_price}",
@@ -1615,6 +1615,8 @@ async fn cmd_follow(
         exit_price: None,
         realized_pnl: None,
         position_id: Some(pos_id),
+        entry_reason: Some(format!("manual follow: {} {}", signal.confidence, signal.signal_type)),
+        exit_reason: None,
     };
     store::append_follow_record(&record)?;
 
@@ -1762,6 +1764,8 @@ async fn cmd_auto_follow(
             exit_price: None,
             realized_pnl: None,
             position_id: Some(pos_id),
+            entry_reason: Some(format!("auto-follow: {} {}", sig.confidence, sig.signal_type)),
+            exit_reason: None,
         };
         store::append_follow_record(&record)?;
         followed += 1;
@@ -1972,7 +1976,7 @@ fn cmd_roi(
             }
         } else {
             // Open trade: use snapshot price, account for BUY/SELL direction
-            current_price = price_map.get(&r.condition_id).copied().unwrap_or(entry_price);
+            current_price = price_map.get(&(r.condition_id.clone(), r.outcome.clone())).copied().unwrap_or(entry_price);
             pnl = calc_open_pnl(&r.side, r.amount_usdc, entry_price, current_price);
             roi_pct = if r.amount_usdc > 0.0 { (pnl / r.amount_usdc) * 100.0 } else { 0.0 };
             unrealized_pnl_total += pnl;
@@ -2117,7 +2121,7 @@ fn cmd_backtest(amount: f64, min_confidence: SignalConfidence, output: &OutputFo
         }
 
         let current_price = price_map
-            .get(&sig.condition_id)
+            .get(&(sig.condition_id.clone(), sig.outcome.clone()))
             .copied()
             .unwrap_or(entry_price);
 
@@ -2289,6 +2293,7 @@ fn build_live_dashboard() -> String {
     let snapshots = store::load_all_snapshots().unwrap_or_default();
     let odds_watches = store::load_odds_watches().unwrap_or_default();
     let odds_alerts = store::load_odds_alerts(30).unwrap_or_default();
+    let price_history = store::load_price_history(Utc::now() - chrono::Duration::hours(24)).unwrap_or_default();
 
     let wallet_positions: std::collections::HashMap<String, usize> = snapshots
         .iter()
@@ -2340,14 +2345,14 @@ fn build_live_dashboard() -> String {
     let mut live_invested = 0.0f64;
     let mut live_pnl = 0.0f64;
 
-    let build_follow_row = |r: &FollowRecord, price_map: &std::collections::HashMap<String, f64>| -> (String, f64) {
+    let build_follow_row = |r: &FollowRecord, price_map: &std::collections::HashMap<(String, String), f64>| -> (String, f64) {
         let entry = r.effective_entry();
         let (pnl, current);
         if !r.is_open() {
             pnl = r.realized_pnl.unwrap_or(0.0);
             current = r.exit_price.unwrap_or(entry);
         } else {
-            current = price_map.get(&r.condition_id).copied().unwrap_or(entry);
+            current = price_map.get(&(r.condition_id.clone(), r.outcome.clone())).copied().unwrap_or(entry);
             pnl = calc_open_pnl(&r.side, r.amount_usdc, entry, current);
         }
         let roi = if r.amount_usdc > 0.0 { pnl / r.amount_usdc * 100.0 } else { 0.0 };
@@ -2399,7 +2404,7 @@ fn build_live_dashboard() -> String {
         let p_attr = periods.join(" ");
 
         if r.is_open() {
-            let current = price_map.get(&r.condition_id).copied().unwrap_or(entry);
+            let current = price_map.get(&(r.condition_id.clone(), r.outcome.clone())).copied().unwrap_or(entry);
             let pnl = calc_open_pnl(&r.side, r.amount_usdc, entry, current);
             let roi = if r.amount_usdc > 0.0 { pnl / r.amount_usdc * 100.0 } else { 0.0 };
             let pnl_cls = if pnl >= 0.0 { "text-green" } else { "text-red" };
@@ -2408,11 +2413,25 @@ fn build_live_dashboard() -> String {
             paper_open_invested += r.amount_usdc;
             paper_open_pnl += pnl;
 
-            // Tab 1: Open Positions
+            // Tab 1: Open Positions — build sparkline + 24h change
+            let price_key = format!("{}:{}", r.condition_id, r.outcome);
+            let hist_prices: Vec<f64> = price_history.iter()
+                .filter_map(|s| s.prices.get(&price_key).copied())
+                .collect();
+            let sparkline = build_mini_sparkline(&hist_prices, current);
+            let change_24h = if let Some(&first) = hist_prices.first() {
+                if first > 0.0 { ((current - first) / first) * 100.0 } else { 0.0 }
+            } else { 0.0 };
+            let ch_cls = if change_24h >= 0.0 { "text-green" } else { "text-red" };
+            let ch_str = if hist_prices.is_empty() { "—".to_string() } else { format!("{:+.1}%", change_24h) };
+
+            let entry_reason = r.entry_reason.as_deref().unwrap_or("—");
             open_rows.push_str(&format!(
-                "<tr><td>{}</td><td>{}</td><td>{}</td><td>{:.3}</td><td>{:.3}</td><td>${:.2}</td><td class='{}'>{:+.2}</td><td class='{}'>{:+.1}%</td></tr>",
+                "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{:.3}</td><td>{:.3}</td><td>${:.2}</td><td class='{}'>{:+.2}</td><td class='{}'>{:+.1}%</td><td class='{}'>{}</td><td>{}</td><td>{}</td></tr>",
+                r.timestamp.format("%m-%d %H:%M"),
                 html_escape(&r.market_title), html_escape(&r.outcome), html_escape(&r.side),
-                entry, current, r.amount_usdc, pnl_cls, pnl, pnl_cls, roi
+                entry, current, r.amount_usdc, pnl_cls, pnl, pnl_cls, roi,
+                ch_cls, ch_str, sparkline, html_escape(entry_reason)
             ));
 
             // Tab 2: Trade History
@@ -2445,12 +2464,14 @@ fn build_live_dashboard() -> String {
             };
 
             // Tab 3: Position History
+            let exit_reason = r.exit_reason.as_deref().unwrap_or("—");
             closed_rows.push_str(&format!(
-                "<tr class='{}'><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{:.3}</td><td>{:.3}</td><td class='{}'>{:+.2}</td><td class='{}'>{:+.1}%</td><td>{}</td></tr>",
+                "<tr class='{}'><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{:.3}</td><td>{:.3}</td><td class='{}'>{:+.2}</td><td class='{}'>{:+.1}%</td><td>{}</td><td>{}</td></tr>",
                 row_cls, r.timestamp.format("%m-%d %H:%M"),
                 r.closed_at.map_or("—".into(), |t| t.format("%m-%d %H:%M").to_string()),
                 html_escape(&r.market_title), html_escape(&r.side),
-                entry, exit, pnl_cls, pnl, pnl_cls, roi, hold_str
+                entry, exit, pnl_cls, pnl, pnl_cls, roi, hold_str,
+                html_escape(exit_reason)
             ));
 
             // Tab 2: Trade History
@@ -2533,7 +2554,7 @@ fn build_live_dashboard() -> String {
         } else {
             let oc = if paper_open_pnl >= 0.0 { "#4ade80" } else { "#f87171" };
             format!(
-                "<table><thead><tr><th>Market</th><th>Outcome</th><th>Side</th><th>Entry</th><th>Current</th><th>Size</th><th>Unrealized PnL</th><th>ROI</th></tr></thead><tbody>{}</tbody></table>\
+                "<table><thead><tr><th>Time</th><th>Market</th><th>Outcome</th><th>Side</th><th>Entry</th><th>Current</th><th>Size</th><th>PnL</th><th>ROI</th><th>24h</th><th>Trend</th><th>Entry Reason</th></tr></thead><tbody>{}</tbody></table>\
                  <p style='margin-top:.5rem;color:#94a3b8;font-size:.8rem'>{} positions | ${:.2} invested | Unrealized: <span style='color:{}'>{:+.2}</span></p>",
                 open_rows, paper_open_count, paper_open_invested, oc, paper_open_pnl
             )
@@ -2566,7 +2587,7 @@ fn build_live_dashboard() -> String {
             "<p class='empty'>No closed positions yet.</p>".to_string()
         } else {
             format!(
-                "<table><thead><tr><th>Opened</th><th>Closed</th><th>Market</th><th>Side</th><th>Entry</th><th>Exit</th><th>PnL</th><th>ROI</th><th>Hold</th></tr></thead><tbody>{}</tbody></table>",
+                "<table><thead><tr><th>Opened</th><th>Closed</th><th>Market</th><th>Side</th><th>Entry</th><th>Exit</th><th>PnL</th><th>ROI</th><th>Hold</th><th>Reason</th></tr></thead><tbody>{}</tbody></table>",
                 closed_rows
             )
         };
@@ -2702,6 +2723,12 @@ tr:hover td{{background:#111827aa}}
 .grid-2{{display:grid;grid-template-columns:1fr 1fr;gap:1.5rem}}
 @media(max-width:900px){{.grid-2{{grid-template-columns:1fr}}}}
 .section{{background:#0f1629;border:1px solid #1e293b;border-radius:10px;padding:1rem;overflow-x:auto}}
+.collapse{{cursor:pointer}}
+.collapse summary{{list-style:none;display:flex;align-items:center;gap:.5rem}}
+.collapse summary::-webkit-details-marker{{display:none}}
+.collapse summary::before{{content:'▶';font-size:.7rem;color:#64748b;transition:transform .2s}}
+.collapse[open] summary::before{{transform:rotate(90deg)}}
+.collapse .section{{margin-top:.6rem}}
 </style>
 </head>
 <body>
@@ -2733,12 +2760,12 @@ tr:hover td{{background:#111827aa}}
 </div>
 </div>
 
-<div>
-<h2>Watched Wallets <span class="count">{wallet_count}</span></h2>
+<details class="collapse">
+<summary><h2 style="display:inline">Watched Wallets <span class="count">{wallet_count}</span></h2></summary>
 <div class="section">
 {wallets_section}
 </div>
-</div>
+</details>
 </div>
 
 <h2>Recent Signals <span class="count">{signal_count}</span></h2>
@@ -2830,6 +2857,73 @@ fn split_keywords(s: Option<&str>) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// Check if a market resolves within `max_days` days based on its title.
+/// Returns true (allow) if no date found or if within the window.
+fn market_within_horizon(title: &str, max_days: i64) -> bool {
+    let lower = title.to_lowercase();
+    let today = Utc::now().date_naive();
+
+    let months: &[(&str, u32)] = &[
+        ("january", 1), ("february", 2), ("march", 3), ("april", 4),
+        ("may", 5), ("june", 6), ("july", 7), ("august", 8),
+        ("september", 9), ("october", 10), ("november", 11), ("december", 12),
+    ];
+
+    // Find month in title
+    let mut found_month: Option<u32> = None;
+    let mut month_end_idx = 0usize;
+    for &(name, num) in months {
+        if let Some(pos) = lower.find(name) {
+            found_month = Some(num);
+            month_end_idx = pos + name.len();
+            break;
+        }
+    }
+    let month = match found_month {
+        Some(m) => m,
+        None => {
+            // Check "end of YYYY" without month
+            for yr in &["2026", "2027", "2028", "2029"] {
+                if lower.contains(&format!("end of {yr}")) || lower.contains(&format!("by {yr}")) {
+                    if let Ok(y) = yr.parse::<i32>() {
+                        if let Some(d) = chrono::NaiveDate::from_ymd_opt(y, 12, 31) {
+                            return (d - today).num_days() <= max_days;
+                        }
+                    }
+                }
+            }
+            return true; // no date pattern found, allow
+        }
+    };
+
+    // Extract day: look for digits right after month name
+    let rest = &lower[month_end_idx..];
+    let day: u32 = rest
+        .trim_start()
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect::<String>()
+        .parse()
+        .unwrap_or(28); // default to ~end of month
+    let day = day.clamp(1, 28);
+
+    // Extract year: find "20XX" anywhere in title
+    let year: i32 = lower
+        .as_bytes()
+        .windows(4)
+        .filter_map(|w| {
+            let s = std::str::from_utf8(w).ok()?;
+            if s.starts_with("20") { s.parse::<i32>().ok() } else { None }
+        })
+        .find(|&y| (2025..=2030).contains(&y))
+        .unwrap_or(chrono::Datelike::year(&today));
+
+    match chrono::NaiveDate::from_ymd_opt(year, month, day) {
+        Some(resolve) => (resolve - today).num_days() <= max_days,
+        None => true, // can't construct date, allow
+    }
+}
+
 fn evaluate_triggers(
     all_signals: &[Signal],
     aggregated: &[AggregatedSignal],
@@ -2892,8 +2986,8 @@ fn evaluate_triggers(
 
     for sig in all_signals {
         if aggregated_conditions.contains(&sig.condition_id) { continue; }
-        // Only trigger on NewPosition — skip IncreasePosition/DecreasePosition noise
-        if !matches!(sig.signal_type, crate::smart::SignalType::NewPosition | crate::smart::SignalType::ClosePosition) {
+        // Only trigger on NewPosition — ClosePosition is handled separately (closes our BUY positions)
+        if !matches!(sig.signal_type, crate::smart::SignalType::NewPosition) {
             continue;
         }
         if confidence_rank(&sig.confidence) < confidence_rank(&config.min_confidence) { continue; }
@@ -2909,6 +3003,11 @@ fn evaluate_triggers(
         // Tighter price filter: skip near-resolved markets
         let sig_price: f64 = sig.price.parse().unwrap_or(0.0);
         if sig_price < 0.05 || sig_price > 0.95 { continue; }
+        // Min position size filter: skip small/test positions (<$200)
+        let sig_size: f64 = sig.size.parse().unwrap_or(0.0);
+        if sig_size < 200.0 { continue; }
+        // Resolution horizon: only trade markets resolving within 30 days
+        if !market_within_horizon(&sig.market_title, 30) { continue; }
 
         let tag = sig.wallet_tag.as_deref().unwrap_or(&sig.wallet[..8.min(sig.wallet.len())]);
         triggers.push(TriggerEvent {
@@ -3025,6 +3124,11 @@ async fn cmd_monitor(
     let mut interval_timer = tokio::time::interval(interval_dur);
     interval_timer.tick().await; // first tick is immediate
 
+    // Confirmation delay: queue triggers and wait before executing paper trades
+    let confirm_secs = 600i64; // 10 minutes
+    let mut pending_triggers: Vec<(crate::smart::TriggerEvent, chrono::DateTime<Utc>)> = Vec::new();
+    let mut cancelled_keys: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
+
     loop {
         tokio::select! {
             _ = interval_timer.tick() => {
@@ -3063,102 +3167,273 @@ async fn cmd_monitor(
                     if matches!(sig.signal_type, crate::smart::SignalType::ClosePosition) {
                         let exit_price: f64 = sig.price.parse().unwrap_or(0.0);
                         if exit_price > 0.0 {
-                            let _ = store::close_follow_position(&sig.condition_id, &sig.outcome, exit_price);
+                            let tag = sig.wallet_tag.as_deref().unwrap_or("unknown");
+                            let reason = format!("whale exit: {} closed", tag);
+                            let _ = store::close_follow_position(&sig.condition_id, &sig.outcome, exit_price, &reason);
                         }
+                    }
+                }
+
+                // Record price history + stop-loss for open positions
+                {
+                    use polymarket_client_sdk::clob;
+                    use polymarket_client_sdk::clob::types::request::MidpointRequest;
+                    use polymarket_client_sdk::types::U256;
+                    use rust_decimal::prelude::ToPrimitive;
+
+                    let wallet_price_map = store::current_price_map().unwrap_or_default();
+                    let open_follows = store::load_follow_records().unwrap_or_default();
+                    let open_positions: Vec<&FollowRecord> = open_follows.iter()
+                        .filter(|r| r.dry_run && r.is_open())
+                        .collect();
+
+                    // Build live price map: wallet snapshots + midpoint API fallback
+                    let mut live_prices: std::collections::HashMap<(String, String), f64> = std::collections::HashMap::new();
+                    let clob_client = clob::Client::default();
+
+                    for r in &open_positions {
+                        let key = (r.condition_id.clone(), r.outcome.clone());
+                        if live_prices.contains_key(&key) { continue; }
+                        if let Some(&p) = wallet_price_map.get(&key) {
+                            live_prices.insert(key, p);
+                        } else {
+                            // Fetch midpoint for positions not in wallet snapshots
+                            if let Ok(token_id) = r.asset.parse::<U256>() {
+                                let req = MidpointRequest::builder().token_id(token_id).build();
+                                if let Ok(result) = clob_client.midpoint(&req).await {
+                                    let mid = result.mid.to_f64().unwrap_or(0.0);
+                                    if mid > 0.0 {
+                                        live_prices.insert(key, mid);
+                                    }
+                                }
+                                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                            }
+                        }
+                    }
+
+                    // Record price history (serialize keys as "condition_id:outcome")
+                    if !live_prices.is_empty() {
+                        let serialized: std::collections::HashMap<String, f64> = live_prices.iter()
+                            .map(|((cid, out), &p)| (format!("{cid}:{out}"), p))
+                            .collect();
+                        let snap = PriceSnapshot { timestamp: Utc::now(), prices: serialized };
+                        let _ = store::append_price_snapshot(&snap);
+                    }
+                    if cycle % 100 == 0 {
+                        let _ = store::prune_price_history(48);
+                    }
+
+                    // Stop-loss + trailing stop
+                    let stop_loss_pct = -30.0f64;
+                    let trailing_activate_pct = 30.0f64;  // activate trailing stop after +30% ROI
+                    let trailing_drawdown_pct = 50.0f64;  // close if ROI drops 50% from peak
+                    let mut peak_roi = store::load_peak_roi().unwrap_or_default();
+                    let mut peak_changed = false;
+
+                    for r in &open_positions {
+                        let entry = r.effective_entry();
+                        if entry <= 0.0 { continue; }
+                        let pos_id = r.position_id.as_deref().unwrap_or(&r.condition_id);
+                        if let Some(&current) = live_prices.get(&(r.condition_id.clone(), r.outcome.clone())) {
+                            if current <= 0.0 { continue; }
+                            let pnl = calc_open_pnl(&r.side, r.amount_usdc, entry, current);
+                            let roi = pnl / r.amount_usdc * 100.0;
+
+                            // Stop-loss
+                            if roi <= stop_loss_pct {
+                                let reason = format!("stop-loss: {:.1}% (limit {:.0}%)", roi, stop_loss_pct);
+                                let _ = store::close_follow_position(&r.condition_id, &r.outcome, current, &reason);
+                                peak_roi.remove(pos_id);
+                                peak_changed = true;
+                                eprintln!("  STOP-LOSS: {} @ {:.3} -> {:.3} ({:+.1}%)", r.market_title, entry, current, roi);
+                                continue;
+                            }
+
+                            // Trailing stop: update peak and check drawdown
+                            let prev_peak = peak_roi.get(pos_id).copied().unwrap_or(0.0f64);
+                            if roi > prev_peak {
+                                peak_roi.insert(pos_id.to_string(), roi);
+                                peak_changed = true;
+                            }
+                            let current_peak = peak_roi.get(pos_id).copied().unwrap_or(0.0);
+
+                            if current_peak >= trailing_activate_pct {
+                                let threshold = current_peak * (1.0 - trailing_drawdown_pct / 100.0);
+                                if roi < threshold {
+                                    let reason = format!("trailing-stop: peak {:.1}% -> {:.1}% (drawdown {:.0}%)", current_peak, roi, trailing_drawdown_pct);
+                                    let _ = store::close_follow_position(&r.condition_id, &r.outcome, current, &reason);
+                                    peak_roi.remove(pos_id);
+                                    peak_changed = true;
+                                    eprintln!("  TRAILING-STOP: {} peak {:.1}% -> now {:.1}% (threshold {:.1}%) @ {:.3}", r.market_title, current_peak, roi, threshold, current);
+                                }
+                            }
+                        }
+                    }
+
+                    // Clean up peak_roi for closed positions
+                    let open_pos_ids: std::collections::HashSet<String> = open_positions.iter()
+                        .filter_map(|r| r.position_id.clone())
+                        .collect();
+                    peak_roi.retain(|k, _| open_pos_ids.contains(k));
+
+                    if peak_changed {
+                        let _ = store::save_peak_roi(&peak_roi);
                     }
                 }
 
                 // Aggregate
                 let aggregated = signals::aggregate_signals(&all_signals);
 
-                // Scan odds
-                let odds_alerts = if config.odds_threshold > 0.0 {
+                // Scan odds (always scan if watches exist; each watch has its own threshold)
+                let odds_alerts = {
                     let alerts = odds::scan_odds().await.unwrap_or_default();
                     if !alerts.is_empty() {
                         let _ = store::append_odds_alerts(&alerts);
                     }
                     alerts
-                } else {
-                    Vec::new()
                 };
 
                 // Evaluate triggers
                 let triggers = evaluate_triggers(&all_signals, &aggregated, &odds_alerts, &config);
 
-                // Paper trade
+                // Paper trade with confirmation delay
                 let mut paper_count = 0u32;
-                if config.paper_trade && !triggers.is_empty() {
-                    let today_spent = store::today_spend().unwrap_or(0.0);
-                    let mut spent = 0.0f64;
+                let mut pending_count = 0u32;
 
-                    // Load existing open positions to avoid duplicates and hedging
-                    let existing_follows = store::load_follow_records().unwrap_or_default();
-                    let open_positions: std::collections::HashSet<(String, String)> = existing_follows.iter()
-                        .filter(|r| r.dry_run && r.is_open())
-                        .map(|r| (r.condition_id.clone(), r.outcome.clone()))
-                        .collect();
-                    // Track all open condition_ids to prevent opposite-side hedging
-                    let open_markets: std::collections::HashSet<String> = existing_follows.iter()
-                        .filter(|r| r.dry_run && r.is_open())
-                        .map(|r| r.condition_id.clone())
-                        .collect();
+                if config.paper_trade {
+                    // Cancel pending triggers if ClosePosition seen for same market
+                    for sig in &all_signals {
+                        if matches!(sig.signal_type, crate::smart::SignalType::ClosePosition) {
+                            cancelled_keys.insert((sig.condition_id.clone(), sig.outcome.clone()));
+                        }
+                    }
+
+                    // Queue new triggers (instead of immediate execution)
+                    // Anti-hedge: track condition_ids already pending to prevent Yes+No on same market
+                    let mut pending_cids: std::collections::HashSet<(String, String)> = pending_triggers
+                        .iter().map(|(t, _)| (t.condition_id.clone(), t.outcome.clone())).collect();
+                    let mut pending_markets: std::collections::HashSet<String> = pending_triggers
+                        .iter().map(|(t, _)| t.condition_id.clone()).collect();
+                    // Also include existing open positions
+                    {
+                        let existing = store::load_follow_records().unwrap_or_default();
+                        for r in &existing {
+                            if r.dry_run && r.is_open() {
+                                pending_markets.insert(r.condition_id.clone());
+                            }
+                        }
+                    }
 
                     for trigger in &triggers {
                         if matches!(trigger.trigger_type, crate::smart::TriggerType::OddsAlert) {
-                            continue; // don't paper-trade on pure odds alerts
+                            continue;
                         }
-                        // Tighter price filter
                         if trigger.price < 0.05 || trigger.price > 0.95 {
                             continue;
                         }
-                        // Skip if already have open paper position on same market+outcome
-                        if open_positions.contains(&(trigger.condition_id.clone(), trigger.outcome.clone())) {
+                        let key = (trigger.condition_id.clone(), trigger.outcome.clone());
+                        if pending_cids.contains(&key) || cancelled_keys.contains(&key) {
                             continue;
                         }
-                        // Anti-hedge: skip if we already have any open position on this market
-                        if open_markets.contains(&trigger.condition_id) {
+                        // Anti-hedge: skip if same market already pending or open
+                        if pending_markets.contains(&trigger.condition_id) {
                             continue;
                         }
-                        if today_spent + spent + config.amount > config.max_per_day {
-                            break;
-                        }
-
-                        let side_str = trigger.direction.to_string();
-                        let pos_id = format!(
-                            "pos_{}_{}",
-                            Utc::now().format("%Y%m%d%H%M%S"),
-                            &trigger.condition_id[..8.min(trigger.condition_id.len())]
-                        );
-                        let record = FollowRecord {
-                            timestamp: Utc::now(),
-                            signal_id: trigger.signal_id.clone(),
-                            market_title: trigger.market_title.clone(),
-                            condition_id: trigger.condition_id.clone(),
-                            asset: trigger.asset.clone(),
-                            outcome: trigger.outcome.clone(),
-                            side: side_str,
-                            amount_usdc: config.amount,
-                            price: trigger.price,
-                            dry_run: true,
-                            order_id: None,
-                            fill_price: None,
-                            status: Some(TradeStatus::Open),
-                            closed_at: None,
-                            exit_price: None,
-                            realized_pnl: None,
-                            position_id: Some(pos_id),
-                        };
-                        let _ = store::append_follow_record(&record);
-                        paper_count += 1;
-                        spent += config.amount;
+                        pending_triggers.push((trigger.clone(), Utc::now()));
+                        pending_cids.insert(key);
+                        pending_markets.insert(trigger.condition_id.clone());
+                        pending_count += 1;
                     }
+
+                    // Execute confirmed triggers (>= 10 min old, not cancelled)
+                    let now_utc = Utc::now();
+                    let mut confirmed = Vec::new();
+                    let mut still_pending = Vec::new();
+                    for (trigger, created_at) in pending_triggers.drain(..) {
+                        let key = (trigger.condition_id.clone(), trigger.outcome.clone());
+                        if cancelled_keys.contains(&key) {
+                            continue; // discard cancelled
+                        }
+                        if (now_utc - created_at).num_seconds() >= confirm_secs {
+                            confirmed.push(trigger);
+                        } else {
+                            still_pending.push((trigger, created_at));
+                        }
+                    }
+                    pending_triggers = still_pending;
+
+                    // Create paper trades from confirmed triggers
+                    if !confirmed.is_empty() {
+                        let today_spent = store::today_spend().unwrap_or(0.0);
+                        let mut spent = 0.0f64;
+
+                        let existing_follows = store::load_follow_records().unwrap_or_default();
+                        let mut open_positions: std::collections::HashSet<(String, String)> = existing_follows.iter()
+                            .filter(|r| r.dry_run && r.is_open())
+                            .map(|r| (r.condition_id.clone(), r.outcome.clone()))
+                            .collect();
+                        let mut open_markets: std::collections::HashSet<String> = existing_follows.iter()
+                            .filter(|r| r.dry_run && r.is_open())
+                            .map(|r| r.condition_id.clone())
+                            .collect();
+
+                        for trigger in &confirmed {
+                            if open_positions.contains(&(trigger.condition_id.clone(), trigger.outcome.clone())) {
+                                continue;
+                            }
+                            if open_markets.contains(&trigger.condition_id) {
+                                continue;
+                            }
+                            if today_spent + spent + config.amount > config.max_per_day {
+                                break;
+                            }
+
+                            let side_str = trigger.direction.to_string();
+                            let pos_id = format!(
+                                "pos_{}_{}",
+                                Utc::now().format("%Y%m%d%H%M%S"),
+                                &trigger.condition_id[..8.min(trigger.condition_id.len())]
+                            );
+                            let record = FollowRecord {
+                                timestamp: Utc::now(),
+                                signal_id: trigger.signal_id.clone(),
+                                market_title: trigger.market_title.clone(),
+                                condition_id: trigger.condition_id.clone(),
+                                asset: trigger.asset.clone(),
+                                outcome: trigger.outcome.clone(),
+                                side: side_str,
+                                amount_usdc: config.amount,
+                                price: trigger.price,
+                                dry_run: true,
+                                order_id: None,
+                                fill_price: None,
+                                status: Some(TradeStatus::Open),
+                                closed_at: None,
+                                exit_price: None,
+                                realized_pnl: None,
+                                position_id: Some(pos_id),
+                                entry_reason: Some(format!("monitor: {}", trigger.reason)),
+                                exit_reason: None,
+                            };
+                            let _ = store::append_follow_record(&record);
+                            // Track this trade to prevent hedge in same batch
+                            open_positions.insert((trigger.condition_id.clone(), trigger.outcome.clone()));
+                            open_markets.insert(trigger.condition_id.clone());
+                            paper_count += 1;
+                            spent += config.amount;
+                        }
+                    }
+
+                    // Prune old cancelled keys (keep only recent 1h)
+                    // cancelled_keys grows unbounded, but is small per session; acceptable
                 }
 
                 // Summary line
                 let err_str = if scan_errors > 0 { format!(", {scan_errors} error(s)") } else { String::new() };
                 let paper_str = if paper_count > 0 { format!(", {paper_count} paper trade(s)") } else { String::new() };
+                let pending_str = if pending_count > 0 { format!(", {pending_count} pending") } else if !pending_triggers.is_empty() { format!(", {} queued", pending_triggers.len()) } else { String::new() };
                 eprintln!(
-                    "{} signal(s), {} trigger(s){paper_str}{err_str}",
+                    "{} signal(s), {} trigger(s){paper_str}{pending_str}{err_str}",
                     all_signals.len(), triggers.len()
                 );
 
@@ -3260,7 +3535,7 @@ fn cmd_report() -> Result<()> {
                 closed_count += 1;
                 if rpnl > 0.0 { closed_wins += 1; }
             } else {
-                current = price_map.get(&r.condition_id).copied().unwrap_or(entry);
+                current = price_map.get(&(r.condition_id.clone(), r.outcome.clone())).copied().unwrap_or(entry);
                 pnl = calc_open_pnl(&r.side, r.amount_usdc, entry, current);
                 unrealized_pnl += pnl;
             }
@@ -3330,6 +3605,52 @@ fn cmd_report() -> Result<()> {
 }
 
 // ── SVG Chart Helpers ────────────────────────────────────────────
+
+fn build_mini_sparkline(prices: &[f64], current: f64) -> String {
+    let mut pts: Vec<f64> = prices.to_vec();
+    pts.push(current);
+    if pts.len() < 2 {
+        return "<span style='color:#475569;font-size:.7rem'>—</span>".to_string();
+    }
+    // Downsample to max 30 points for clean sparkline
+    let max_pts = 30;
+    let sampled: Vec<f64> = if pts.len() > max_pts {
+        let step = pts.len() as f64 / max_pts as f64;
+        (0..max_pts).map(|i| pts[(i as f64 * step) as usize]).collect()
+    } else {
+        pts.clone()
+    };
+
+    let w = 100.0f64;
+    let h = 24.0f64;
+    let pad = 2.0f64;
+    let min_v = sampled.iter().cloned().fold(f64::INFINITY, f64::min);
+    let max_v = sampled.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    let v_range = (max_v - min_v).max(0.001);
+    let n = sampled.len() as f64;
+
+    let x = |i: usize| -> f64 { pad + (i as f64 / (n - 1.0)) * (w - pad * 2.0) };
+    let y = |v: f64| -> f64 { h - pad - (v - min_v) / v_range * (h - pad * 2.0) };
+
+    let mut path = String::new();
+    for (i, &v) in sampled.iter().enumerate() {
+        let cmd = if i == 0 { "M" } else { "L" };
+        path.push_str(&format!("{cmd}{:.1},{:.1} ", x(i), y(v)));
+    }
+
+    let final_v = *sampled.last().unwrap();
+    let first_v = sampled[0];
+    let color = if final_v >= first_v { "#4ade80" } else { "#f87171" };
+
+    format!(
+        "<svg viewBox='0 0 {w} {h}' width='100' height='24' xmlns='http://www.w3.org/2000/svg' style='vertical-align:middle'>\
+         <path d='{path}' fill='none' stroke='{color}' stroke-width='1.5'/>\
+         <circle cx='{lx:.1}' cy='{ly:.1}' r='2' fill='{color}'/>\
+         </svg>",
+        w = w, h = h, path = path, color = color,
+        lx = x(sampled.len() - 1), ly = y(final_v),
+    )
+}
 
 fn build_equity_curve_svg(points: &[(i64, f64)]) -> String {
     if points.len() < 2 {
