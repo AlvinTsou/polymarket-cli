@@ -476,6 +476,47 @@ if ! result=$(polymarket -o json clob balance --asset-type collateral 2>/dev/nul
 fi
 ```
 
+### Smart Money Tracking
+
+Track profitable wallets, detect trading signals, and paper trade automatically.
+
+```bash
+# Discover smart wallets from leaderboard
+polymarket smart discover --period month --limit 50
+
+# Watch a wallet
+polymarket smart watch 0xADDRESS
+
+# Scan for new signals
+polymarket smart scan --notify
+
+# Run real-time monitor with paper trading
+polymarket smart monitor --interval 3m --paper-trade --amount 10 --notify
+
+# Check paper trade performance
+polymarket smart roi
+polymarket smart history
+```
+
+Features: wallet scoring, signal aggregation, Telegram/macOS notifications, stop-loss, trailing stop, exchange-style dashboard at `localhost:3456`.
+
+See [docs/smart-money-system.md](docs/smart-money-system.md) for full documentation.
+
+### 5-Minute Crypto Trading (Experimental)
+
+Use Binance exchange data to predict Polymarket 5-minute BTC/ETH up/down markets.
+
+```bash
+# Check current momentum signal
+polymarket smart crypto signal
+
+# Backtest 24h accuracy
+polymarket smart crypto backtest
+
+# Run auto paper trading loop
+polymarket smart crypto monitor --amount 10 --notify
+```
+
 ## Architecture
 
 ```
@@ -484,8 +525,10 @@ src/
   auth.rs        -- Wallet resolution, RPC provider, CLOB authentication
   config.rs      -- Config file (~/.config/polymarket/config.json)
   shell.rs       -- Interactive REPL
-  commands/      -- One module per command group
+  commands/      -- One module per command group (including smart.rs ~5000 lines)
   output/        -- Table and JSON rendering per command group
+  smart/         -- Smart money engine (scorer, tracker, signals, store, odds)
+  crypto/        -- 5m crypto trading (Binance feed, momentum signal, market discovery)
 ```
 
 ## License

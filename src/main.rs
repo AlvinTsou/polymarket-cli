@@ -1,6 +1,7 @@
 mod auth;
 mod commands;
 mod config;
+mod crypto;
 mod output;
 mod shell;
 mod smart;
