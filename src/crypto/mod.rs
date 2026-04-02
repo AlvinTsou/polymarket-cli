@@ -148,6 +148,16 @@ pub struct MomentumSignal {
     pub timestamp: i64,      // ms
 }
 
+/// Aggregated order book + trade data from multiple exchanges.
+#[derive(Clone, Debug, Default)]
+pub struct AggregatedSpot {
+    pub orderbooks: Vec<(String, OrderBook)>,   // (exchange_name, book)
+    pub trades: Vec<(String, Vec<Trade>)>,      // (exchange_name, trades)
+    pub merged_ob_imbalance: f64,               // volume-weighted across exchanges
+    pub merged_trade_flow: f64,                 // aggregated buy-sell imbalance
+    pub exchange_count: u32,
+}
+
 /// A discovered Polymarket 5-minute market.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Market5m {

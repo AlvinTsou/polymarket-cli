@@ -1,4 +1,4 @@
-use super::{Candle, Direction, FuturesData, MomentumSignal, OrderBook, SignalComponents, Trade, CryptoAsset};
+use super::{AggregatedSpot, Candle, Direction, FuturesData, MomentumSignal, OrderBook, SignalComponents, Trade, CryptoAsset};
 
 /// Weights for basic signal (no futures data).
 const W_MOM_1M: f64 = 0.30;
@@ -44,7 +44,7 @@ pub fn compute_signal(
     compute_signal_enhanced(asset, candles, orderbook, trades, None)
 }
 
-/// Compute momentum signal with optional futures data (enhanced 7-component model).
+/// Compute momentum signal with optional futures + aggregated spot data.
 pub fn compute_signal_enhanced(
     asset: CryptoAsset,
     candles: &[Candle],
@@ -52,14 +52,30 @@ pub fn compute_signal_enhanced(
     trades: &[Trade],
     futures: Option<&FuturesData>,
 ) -> MomentumSignal {
+    compute_signal_full(asset, candles, orderbook, trades, futures, None)
+}
+
+/// Compute momentum signal with full cross-exchange data.
+pub fn compute_signal_full(
+    asset: CryptoAsset,
+    candles: &[Candle],
+    orderbook: &OrderBook,
+    trades: &[Trade],
+    futures: Option<&FuturesData>,
+    aggregated: Option<&AggregatedSpot>,
+) -> MomentumSignal {
     let now_ms = chrono::Utc::now().timestamp_millis();
     let current_price = candles.last().map(|c| c.close).unwrap_or(0.0);
 
     let price_mom_1m = price_momentum(candles, 1);
     let price_mom_5m = price_momentum(candles, 5);
-    let ob_imbalance = orderbook_imbalance(orderbook);
-    let trade_flow = trade_flow_imbalance(trades);
     let volatility = return_volatility(candles, 15);
+
+    // Use aggregated cross-exchange data if available, else Binance only
+    let (ob_imbalance, trade_flow) = match aggregated {
+        Some(agg) if agg.exchange_count >= 2 => (agg.merged_ob_imbalance, agg.merged_trade_flow),
+        _ => (orderbook_imbalance(orderbook), trade_flow_imbalance(trades)),
+    };
 
     let (funding_signal, oi_delta_signal, liquidation_signal, raw_score) = match futures {
         Some(fd) => {

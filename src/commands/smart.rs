@@ -4860,24 +4860,33 @@ async fn cmd_crypto_signal(asset_str: &str, output: &OutputFormat) -> Result<()>
     let asset: crypto::CryptoAsset = asset_str.parse()?;
     let feed = crypto::feed::BinanceFeed::new();
     let futures_feed = crypto::feed::BinanceFuturesFeed::new();
+    let okx_feed = crypto::feed::OkxFeed::new();
+    let hl_feed = crypto::feed::HyperliquidFeed::new();
 
-    let (candles, depth, trades, futures) =
-        tokio::join!(
-            feed.fetch_klines(asset, "1m", 30),
-            feed.fetch_depth(asset, 20),
-            feed.fetch_trades(asset, 500),
-            futures_feed.fetch_all(asset),
-        );
-    let candles = candles?;
-    let depth = depth?;
-    let trades = trades?;
-    let futures_data = futures.ok();
+    let (candles_res, agg_spot, agg_futures) = tokio::join!(
+        feed.fetch_klines(asset, "1m", 30),
+        crypto::feed::fetch_aggregated_spot(&feed, &okx_feed, &hl_feed, asset),
+        crypto::feed::fetch_aggregated_futures(&futures_feed, &okx_feed, &hl_feed, asset),
+    );
+    let candles = candles_res?;
 
-    let signal = crypto::momentum::compute_signal_enhanced(
-        asset, &candles, &depth, &trades, futures_data.as_ref(),
+    // Use Binance order book as primary (first in aggregated list), fallback to empty
+    let binance_ob = agg_spot.orderbooks.iter()
+        .find(|(name, _)| name == "binance")
+        .map(|(_, ob)| ob.clone())
+        .unwrap_or(crypto::OrderBook { bids: vec![], asks: vec![], timestamp: 0 });
+    let binance_trades = agg_spot.trades.iter()
+        .find(|(name, _)| name == "binance")
+        .map(|(_, tr)| tr.clone())
+        .unwrap_or_default();
+
+    let signal = crypto::momentum::compute_signal_full(
+        asset, &candles, &binance_ob, &binance_trades,
+        Some(&agg_futures), Some(&agg_spot),
     );
 
-    let has_futures = futures_data.is_some();
+    let has_futures = true;
+    let futures_data = Some(agg_futures);
 
     match output {
         OutputFormat::Json => {
@@ -4885,7 +4894,9 @@ async fn cmd_crypto_signal(asset_str: &str, output: &OutputFormat) -> Result<()>
         }
         _ => {
             let c = &signal.components;
-            if has_futures {
+            if agg_spot.exchange_count >= 2 {
+                println!("--- {} Multi-Exchange Signal ({} exchanges + futures) ---", asset, agg_spot.exchange_count);
+            } else if has_futures {
                 println!("--- {} Enhanced Signal (spot + futures) ---", asset);
             } else {
                 println!("--- {} Momentum Signal (spot only) ---", asset);
@@ -5064,10 +5075,12 @@ async fn cmd_crypto_monitor(
 
     let feed = crypto::feed::BinanceFeed::new();
     let futures_feed = crypto::feed::BinanceFuturesFeed::new();
+    let okx_feed = crypto::feed::OkxFeed::new();
+    let hl_feed = crypto::feed::HyperliquidFeed::new();
 
-    println!("=== Crypto 5m Monitor (Enhanced) ===");
+    println!("=== Crypto 5m Monitor (Multi-Exchange) ===");
     println!("  Assets:         {}", assets.iter().map(|a| a.to_string()).collect::<Vec<_>>().join(", "));
-    println!("  Signal:         7-component (spot + futures)");
+    println!("  Signal:         7-component (Binance+OKX+Hyperliquid + futures)");
     println!("  Amount:         ${:.2}/trade", amount);
     println!("  Max/hour:       {}", max_per_hour);
     println!("  Max/day:        ${:.2}", max_per_day);
@@ -5109,21 +5122,30 @@ async fn cmd_crypto_monitor(
                 }
 
                 for &asset in &assets {
-                    let (candles_res, depth_res, trades_res, futures_res) = tokio::join!(
+                    let (candles_res, agg_spot, agg_futures) = tokio::join!(
                         feed.fetch_klines(asset, "1m", 30),
-                        feed.fetch_depth(asset, 20),
-                        feed.fetch_trades(asset, 500),
-                        futures_feed.fetch_all(asset),
+                        crypto::feed::fetch_aggregated_spot(&feed, &okx_feed, &hl_feed, asset),
+                        crypto::feed::fetch_aggregated_futures(&futures_feed, &okx_feed, &hl_feed, asset),
                     );
 
-                    let (candles, depth, trades) = match (candles_res, depth_res, trades_res) {
-                        (Ok(c), Ok(d), Ok(t)) => (c, d, t),
-                        _ => { eprint!("{asset} err, "); continue; }
+                    let candles = match candles_res {
+                        Ok(c) => c,
+                        Err(_) => { eprint!("{asset} candle err, "); continue; }
                     };
-                    let futures_data = futures_res.ok();
 
-                    let signal = crypto::momentum::compute_signal_enhanced(
-                        asset, &candles, &depth, &trades, futures_data.as_ref(),
+                    let binance_ob = agg_spot.orderbooks.iter()
+                        .find(|(n, _)| n == "binance")
+                        .map(|(_, ob)| ob.clone())
+                        .unwrap_or(crypto::OrderBook { bids: vec![], asks: vec![], timestamp: 0 });
+                    let binance_trades = agg_spot.trades.iter()
+                        .find(|(n, _)| n == "binance")
+                        .map(|(_, tr)| tr.clone())
+                        .unwrap_or_default();
+
+                    let ex_count = agg_spot.exchange_count;
+                    let signal = crypto::momentum::compute_signal_full(
+                        asset, &candles, &binance_ob, &binance_trades,
+                        Some(&agg_futures), Some(&agg_spot),
                     );
 
                     if signal.direction == crypto::Direction::Skip {
