@@ -1,48 +1,52 @@
-# PMCC Smart Money System -- TODO
+# PMCC Smart Money System — TODO
 
-## Sprint 1-11: COMPLETE (see git history + previous todo)
+## Completed Sprints
 
-## Sprint 12 Phase 1: Binance Futures Integration — COMPLETE
+### Sprint 1-4: Smart Money Pipeline (dba6216)
+- Wallet discovery, scoring, tracking, signals, follow trading, Telegram, ROI, backtest, dashboard
 
-### Step 1: New types in mod.rs
-- [x] Add FuturesData, Liquidation structs
-- [x] Expand SignalComponents with 3 new fields (funding_signal, oi_delta_signal, liquidation_signal)
+### Sprint 5-6: Odds Monitoring + P&L (ae5d27f, 15a6fc3)
+- Odds change monitoring, condition triggers, precise P&L tracking, trade history visualization
 
-### Step 2: BinanceFuturesFeed in feed.rs
-- [x] fetch_funding_rate (fapi/v1/premiumIndex)
-- [x] fetch_open_interest (fapi/v1/openInterest)
-- [x] fetch_liquidations (fapi/v1/allForceOrders)
-- [x] fetch_all() convenience method
+### Sprint 7: Real-Time Monitor (04c09bc)
+- Continuous monitor loop, condition triggers, paper trading with stop-loss
 
-### Step 3: Enhanced signal in momentum.rs
-- [x] compute_signal_enhanced() — 7-component model
-- [x] funding_signal: contrarian normalized funding rate
-- [x] oi_delta_signal: OI change × price direction
-- [x] liquidation_signal: net long vs short liquidation imbalance
-- [x] Keep compute_signal() unchanged as fallback
+### Sprint 8: Wallet Intelligence (e9162f5)
+- Auto-renew wallets, PnL tracking per wallet, trade analysis
 
-### Step 4: Wire into monitor (smart.rs)
-- [x] Add BinanceFuturesFeed alongside BinanceFeed in monitor
-- [x] Parallel fetch spot + futures data
-- [x] Use compute_signal_enhanced when futures data available
-- [x] Graceful fallback to compute_signal if futures fetch fails
+### Sprint 9: Market-First Discovery (1a286f3)
+- discover-markets, discover-whales, discover-auto pipeline
 
-### Step 5: Wire into CLI commands
-- [x] `crypto signal` — show enhanced signal with futures components
-- [x] Futures raw data display (funding rate, mark price, OI, liquidation count)
+### Sprint 10: Paper Trade Dashboard (869ff9b)
+- Exchange-style tabbed dashboard, sparklines, 24h trend, equity curve
 
-### Step 6: Verify
-- [x] cargo build --release — OK (13 warnings, all pre-existing)
-- [x] polymarket smart crypto signal — BTC enhanced signal with futures data
-- [x] polymarket smart crypto signal eth — ETH enhanced signal working
+### Sprint 11: 5-Minute Crypto Trading (7b15950)
+- Binance feed, momentum signal, Polymarket market discovery, paper trade monitor
+- Stop-loss -45%, trailing stop, 98 exclude keywords, anti-hedge, price filter
 
-## Smart Money Monitor (running)
-- Monitor PID running via nohup, 3-min cycles
-- 237 wallets, 98 exclude keywords
-- Paper trades active with stop-loss + trailing stop
-- Dashboard at localhost:3456 (LaunchAgent)
+### Sprint 12 Phase 1: Binance Futures (696ed1c)
+- BinanceFuturesFeed: funding rate, OI, liquidations from FAPI
+- 7-component enhanced signal (funding_signal, oi_delta_signal, liquidation_signal)
+- Dashboard: separate Smart Money vs Crypto 5m sections
+- All Night Shift R114 issues resolved (P0 ×4, P1 ×3, P2 ×1)
+
+### Sprint 12 Phase 2: Multi-Exchange (1cc68f2)
+- OkxFeed: OB, trades, funding, OI, liquidations
+- HyperliquidFeed: L2 book, funding+OI via POST /info
+- Aggregator: parallel 3-exchange fetch, volume-weighted OB/trade merge
+- Aggregated futures: avg funding, sum OI, combined liquidations
+
+## Current State
+
+- **Branch**: `feature/5m-crypto-trade` (15 commits ahead of main)
+- **Binary**: `target/release/polymarket` — multi-exchange enhanced signal
+- **Signal**: 7-component, 3 exchanges (Binance + OKX + Hyperliquid)
+- **Dashboard**: localhost:3456 (LaunchAgent), SM + Crypto split
+- **Monitor**: LaunchAgent, 3-min cycles, enhanced signal active
+- **Code**: smart.rs ~5450 lines, crypto/ ~1487 lines (4 files)
 
 ## Next
-- Sprint 12 Phase 2: OKX + Hyperliquid cross-exchange aggregation
-- Sprint 12 Phase 3: Bybit + weight tuning via backtest grid search
-- Fix P0/P1 issues from Night Shift R114 (tasks/issues.md)
+
+- [ ] Sprint 12 Phase 3: Bybit feed + backtest weight tuning
+- [ ] Merge `feature/5m-crypto-trade` → main
+- [ ] Run enhanced signal monitor for 24-48h, compare win rate vs old 4-component
