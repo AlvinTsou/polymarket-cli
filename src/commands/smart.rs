@@ -4862,11 +4862,12 @@ async fn cmd_crypto_signal(asset_str: &str, output: &OutputFormat) -> Result<()>
     let futures_feed = crypto::feed::BinanceFuturesFeed::new();
     let okx_feed = crypto::feed::OkxFeed::new();
     let hl_feed = crypto::feed::HyperliquidFeed::new();
+    let bybit_feed = crypto::feed::BybitFeed::new();
 
     let (candles_res, agg_spot, agg_futures) = tokio::join!(
         feed.fetch_klines(asset, "1m", 30),
-        crypto::feed::fetch_aggregated_spot(&feed, &okx_feed, &hl_feed, asset),
-        crypto::feed::fetch_aggregated_futures(&futures_feed, &okx_feed, &hl_feed, asset),
+        crypto::feed::fetch_aggregated_spot(&feed, &okx_feed, &hl_feed, &bybit_feed, asset),
+        crypto::feed::fetch_aggregated_futures(&futures_feed, &okx_feed, &hl_feed, &bybit_feed, asset),
     );
     let candles = candles_res?;
 
@@ -5077,10 +5078,11 @@ async fn cmd_crypto_monitor(
     let futures_feed = crypto::feed::BinanceFuturesFeed::new();
     let okx_feed = crypto::feed::OkxFeed::new();
     let hl_feed = crypto::feed::HyperliquidFeed::new();
+    let bybit_feed = crypto::feed::BybitFeed::new();
 
     println!("=== Crypto 5m Monitor (Multi-Exchange) ===");
     println!("  Assets:         {}", assets.iter().map(|a| a.to_string()).collect::<Vec<_>>().join(", "));
-    println!("  Signal:         7-component (Binance+OKX+Hyperliquid + futures)");
+    println!("  Signal:         7-component (Binance+OKX+Hyperliquid+Bybit + futures)");
     println!("  Amount:         ${:.2}/trade", amount);
     println!("  Max/hour:       {}", max_per_hour);
     println!("  Max/day:        ${:.2}", max_per_day);
@@ -5124,8 +5126,8 @@ async fn cmd_crypto_monitor(
                 for &asset in &assets {
                     let (candles_res, agg_spot, agg_futures) = tokio::join!(
                         feed.fetch_klines(asset, "1m", 30),
-                        crypto::feed::fetch_aggregated_spot(&feed, &okx_feed, &hl_feed, asset),
-                        crypto::feed::fetch_aggregated_futures(&futures_feed, &okx_feed, &hl_feed, asset),
+                        crypto::feed::fetch_aggregated_spot(&feed, &okx_feed, &hl_feed, &bybit_feed, asset),
+                        crypto::feed::fetch_aggregated_futures(&futures_feed, &okx_feed, &hl_feed, &bybit_feed, asset),
                     );
 
                     let candles = match candles_res {

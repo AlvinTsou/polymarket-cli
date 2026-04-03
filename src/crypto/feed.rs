@@ -532,6 +532,137 @@ impl HyperliquidFeed {
     }
 }
 
+// ── Bybit Feed ──────────────────────────────────────────────────
+
+const BYBIT_BASE: &str = "https://api.bybit.com";
+
+/// Bybit v5 unified API data feed.
+pub struct BybitFeed {
+    client: Client,
+}
+
+impl BybitFeed {
+    pub fn new() -> Self {
+        Self { client: Client::new() }
+    }
+
+    fn symbol(asset: CryptoAsset) -> &'static str {
+        match asset {
+            CryptoAsset::BTC => "BTCUSDT",
+            CryptoAsset::ETH => "ETHUSDT",
+        }
+    }
+
+    /// Fetch order book (spot, up to 200 levels).
+    pub async fn fetch_orderbook(&self, asset: CryptoAsset) -> Result<OrderBook> {
+        let symbol = Self::symbol(asset);
+        let url = format!("{BYBIT_BASE}/v5/market/orderbook?category=spot&symbol={symbol}&limit=50");
+
+        #[derive(serde::Deserialize)]
+        struct Resp { result: BookResult }
+        #[derive(serde::Deserialize)]
+        struct BookResult { b: Vec<Vec<String>>, a: Vec<Vec<String>> }
+
+        let resp: Resp = self.client.get(&url).send().await
+            .context("bybit orderbook request failed")?
+            .json().await
+            .context("bybit orderbook parse failed")?;
+
+        let parse = |raw: Vec<Vec<String>>| -> Vec<OrderBookLevel> {
+            raw.into_iter().filter_map(|l| {
+                Some(OrderBookLevel { price: l.first()?.parse().ok()?, qty: l.get(1)?.parse().ok()? })
+            }).collect()
+        };
+
+        Ok(OrderBook {
+            bids: parse(resp.result.b),
+            asks: parse(resp.result.a),
+            timestamp: chrono::Utc::now().timestamp_millis(),
+        })
+    }
+
+    /// Fetch recent trades (spot, up to 1000).
+    pub async fn fetch_trades(&self, asset: CryptoAsset) -> Result<Vec<Trade>> {
+        let symbol = Self::symbol(asset);
+        let url = format!("{BYBIT_BASE}/v5/market/recent-trade?category=spot&symbol={symbol}&limit=500");
+
+        #[derive(serde::Deserialize)]
+        struct Resp { result: TradeResult }
+        #[derive(serde::Deserialize)]
+        struct TradeResult { list: Vec<TradeData> }
+        #[derive(serde::Deserialize)]
+        struct TradeData {
+            #[serde(rename = "p")] price: String,
+            #[serde(rename = "v")] qty: String,
+            #[serde(rename = "S")] side: String,
+            #[serde(rename = "T")] time: i64,
+        }
+
+        let resp: Resp = self.client.get(&url).send().await
+            .context("bybit trades request failed")?
+            .json().await
+            .context("bybit trades parse failed")?;
+
+        let trades = resp.result.list.into_iter().filter_map(|t| {
+            Some(Trade {
+                price: t.price.parse().ok()?,
+                qty: t.qty.parse().ok()?,
+                is_buyer_maker: t.side == "Sell", // Bybit: "Sell" = taker sold
+                time: t.time,
+            })
+        }).collect();
+        Ok(trades)
+    }
+
+    /// Fetch latest funding rate (linear perpetual).
+    pub async fn fetch_funding_rate(&self, asset: CryptoAsset) -> Result<f64> {
+        let symbol = Self::symbol(asset);
+        let url = format!("{BYBIT_BASE}/v5/market/funding/history?category=linear&symbol={symbol}&limit=1");
+
+        #[derive(serde::Deserialize)]
+        struct Resp { result: FrResult }
+        #[derive(serde::Deserialize)]
+        struct FrResult { list: Vec<FrData> }
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct FrData { funding_rate: String }
+
+        let resp: Resp = self.client.get(&url).send().await
+            .context("bybit funding request failed")?
+            .json().await
+            .context("bybit funding parse failed")?;
+
+        let rate = resp.result.list.first()
+            .and_then(|d| d.funding_rate.parse::<f64>().ok())
+            .unwrap_or(0.0);
+        Ok(rate)
+    }
+
+    /// Fetch open interest (linear perpetual).
+    pub async fn fetch_open_interest(&self, asset: CryptoAsset) -> Result<f64> {
+        let symbol = Self::symbol(asset);
+        let url = format!("{BYBIT_BASE}/v5/market/open-interest?category=linear&symbol={symbol}&intervalTime=5min&limit=1");
+
+        #[derive(serde::Deserialize)]
+        struct Resp { result: OiResult }
+        #[derive(serde::Deserialize)]
+        struct OiResult { list: Vec<OiData> }
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct OiData { open_interest: String }
+
+        let resp: Resp = self.client.get(&url).send().await
+            .context("bybit OI request failed")?
+            .json().await
+            .context("bybit OI parse failed")?;
+
+        let oi = resp.result.list.first()
+            .and_then(|d| d.open_interest.parse::<f64>().ok())
+            .unwrap_or(0.0);
+        Ok(oi)
+    }
+}
+
 // ── Multi-Exchange Aggregator ───────────────────────────────────
 
 /// Fetch order books and trades from Binance + OKX + Hyperliquid in parallel,
@@ -540,14 +671,17 @@ pub async fn fetch_aggregated_spot(
     binance: &BinanceFeed,
     okx: &OkxFeed,
     hl: &HyperliquidFeed,
+    bybit: &BybitFeed,
     asset: CryptoAsset,
 ) -> AggregatedSpot {
-    let (b_ob, b_tr, o_ob, o_tr, h_ob) = tokio::join!(
+    let (b_ob, b_tr, o_ob, o_tr, h_ob, by_ob, by_tr) = tokio::join!(
         binance.fetch_depth(asset, 20),
         binance.fetch_trades(asset, 500),
         okx.fetch_orderbook(asset),
         okx.fetch_trades(asset),
         hl.fetch_orderbook(asset),
+        bybit.fetch_orderbook(asset),
+        bybit.fetch_trades(asset),
     );
 
     let mut agg = AggregatedSpot::default();
@@ -556,10 +690,12 @@ pub async fn fetch_aggregated_spot(
     if let Ok(ob) = b_ob { agg.orderbooks.push(("binance".into(), ob)); }
     if let Ok(ob) = o_ob { agg.orderbooks.push(("okx".into(), ob)); }
     if let Ok(ob) = h_ob { agg.orderbooks.push(("hyperliquid".into(), ob)); }
+    if let Ok(ob) = by_ob { agg.orderbooks.push(("bybit".into(), ob)); }
 
     // Collect successful trades
     if let Ok(tr) = b_tr { agg.trades.push(("binance".into(), tr)); }
     if let Ok(tr) = o_tr { agg.trades.push(("okx".into(), tr)); }
+    if let Ok(tr) = by_tr { agg.trades.push(("bybit".into(), tr)); }
 
     agg.exchange_count = agg.orderbooks.len() as u32;
 
@@ -592,14 +728,17 @@ pub async fn fetch_aggregated_futures(
     binance_fut: &BinanceFuturesFeed,
     okx: &OkxFeed,
     hl: &HyperliquidFeed,
+    bybit: &BybitFeed,
     asset: CryptoAsset,
 ) -> FuturesData {
-    let (b_all, o_fr, o_oi, o_liq, h_meta) = tokio::join!(
+    let (b_all, o_fr, o_oi, o_liq, h_meta, by_fr, by_oi) = tokio::join!(
         binance_fut.fetch_all(asset),
         okx.fetch_funding_rate(asset),
         okx.fetch_open_interest(asset),
         okx.fetch_liquidations(asset),
         hl.fetch_meta(asset),
+        bybit.fetch_funding_rate(asset),
+        bybit.fetch_open_interest(asset),
     );
 
     let binance = b_all.unwrap_or(FuturesData {
@@ -618,17 +757,23 @@ pub async fn fetch_aggregated_futures(
         funding_rates.push(fr * 8.0);
         funding_count += 1;
     }
+    if let Ok(fr) = by_fr {
+        funding_rates.push(fr);
+        funding_count += 1;
+    }
 
     let avg_funding = funding_rates.iter().sum::<f64>() / funding_count as f64;
 
     // Sum OI across exchanges
     let mut total_oi = binance.open_interest_usd;
     if let Ok(oi) = o_oi {
-        // OKX OI is in contracts; approximate USD by multiplying with mark price
         total_oi += oi * binance.mark_price;
     }
     if let Ok((_, oi)) = h_meta {
-        // Hyperliquid OI is in base asset units
+        total_oi += oi * binance.mark_price;
+    }
+    if let Ok(oi) = by_oi {
+        // Bybit OI is in base asset units
         total_oi += oi * binance.mark_price;
     }
 
