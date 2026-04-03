@@ -5379,13 +5379,14 @@ fn parse_crypto_end_time(title: &str) -> Option<i64> {
     Some(et_dt.timestamp_millis())
 }
 
-/// Calculate total USDC spent on crypto trades today.
+/// Calculate total USDC spent on crypto trades today (exclude expired/cancelled).
 fn crypto_daily_spend() -> f64 {
     let records = store::load_follow_records().unwrap_or_default();
     let today = Utc::now().date_naive();
     records.iter()
         .filter(|r| r.entry_reason.as_deref().map(|e| e.starts_with("crypto:")).unwrap_or(false)
-            && r.timestamp.date_naive() == today)
+            && r.timestamp.date_naive() == today
+            && !matches!(r.status.as_ref(), Some(crate::smart::TradeStatus::Expired)))
         .map(|r| r.amount_usdc)
         .sum()
 }
