@@ -3602,6 +3602,8 @@ async fn cmd_monitor(
                         if let Err(e) = store::prune_price_history(48) {
                             eprintln!("warn: failed to prune price history: {e}");
                         }
+                        let _ = store::prune_signals(5000);
+                        let _ = store::prune_odds_alerts_log(2000);
                     }
 
                     // Stop-loss + trailing stop

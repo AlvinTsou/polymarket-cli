@@ -424,11 +424,13 @@ pub fn print_odds_alerts(alerts: &[OddsAlert], output: &OutputFormat) -> Result<
 
 fn format_money(s: &str) -> String {
     let v: f64 = s.parse().unwrap_or(0.0);
-    if v.abs() >= 1_000_000.0 {
-        format!("${:.1}M", v / 1_000_000.0)
-    } else if v.abs() >= 1_000.0 {
-        format!("${:.1}K", v / 1_000.0)
+    let sign = if v < 0.0 { "-" } else { "" };
+    let abs = v.abs();
+    if abs >= 1_000_000.0 {
+        format!("{sign}${:.1}M", abs / 1_000_000.0)
+    } else if abs >= 1_000.0 {
+        format!("{sign}${:.1}K", abs / 1_000.0)
     } else {
-        format!("${v:.2}")
+        format!("{sign}${abs:.2}")
     }
 }

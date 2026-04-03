@@ -1,7 +1,15 @@
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+
+/// Atomic write: write to a temp file then rename, preventing data corruption on crash.
+fn atomic_write(path: &Path, data: &[u8]) -> Result<()> {
+    let tmp = path.with_extension("tmp");
+    fs::write(&tmp, data).with_context(|| format!("failed to write {}", tmp.display()))?;
+    fs::rename(&tmp, path).with_context(|| format!("failed to rename {} -> {}", tmp.display(), path.display()))?;
+    Ok(())
+}
 
 use super::{
     FollowRecord, MonitorConfig, OddsAlert, OddsWatch, PriceSnapshot, Signal, SmartScore,
@@ -41,7 +49,7 @@ pub fn load_wallets() -> Result<Vec<WatchedWallet>> {
 pub fn save_wallets(wallets: &[WatchedWallet]) -> Result<()> {
     let path = smart_dir()?.join("wallets.json");
     let json = serde_json::to_string_pretty(wallets)?;
-    fs::write(&path, json)?;
+    atomic_write(&path, json.as_bytes())?;
     Ok(())
 }
 
@@ -138,7 +146,7 @@ pub fn load_scores() -> Result<Vec<SmartScore>> {
 pub fn save_scores(scores: &[SmartScore]) -> Result<()> {
     let path = smart_dir()?.join("scores.json");
     let json = serde_json::to_string_pretty(scores)?;
-    fs::write(&path, json)?;
+    atomic_write(&path, json.as_bytes())?;
     Ok(())
 }
 
@@ -156,7 +164,7 @@ pub fn load_telegram_config() -> Result<Option<TelegramConfig>> {
 pub fn save_telegram_config(config: &TelegramConfig) -> Result<()> {
     let path = smart_dir()?.join("telegram.json");
     let json = serde_json::to_string_pretty(config)?;
-    fs::write(&path, json)?;
+    atomic_write(&path, json.as_bytes())?;
     Ok(())
 }
 
@@ -186,19 +194,15 @@ pub fn load_follow_records() -> Result<Vec<FollowRecord>> {
         .collect())
 }
 
-/// Rewrite all follow records (used when closing positions).
+/// Rewrite all follow records (used when closing positions). Uses atomic write.
 pub fn save_follow_records(records: &[FollowRecord]) -> Result<()> {
-    use std::io::Write;
     let path = smart_dir()?.join("follows.jsonl");
-    let mut file = fs::OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(true)
-        .open(&path)?;
+    let mut content = String::new();
     for record in records {
-        writeln!(file, "{}", serde_json::to_string(record)?)?;
+        content.push_str(&serde_json::to_string(record)?);
+        content.push('\n');
     }
-    Ok(())
+    atomic_write(&path, content.as_bytes())
 }
 
 /// Close a matching open follow record by condition_id + outcome.
@@ -295,7 +299,7 @@ pub fn load_odds_watches() -> Result<Vec<OddsWatch>> {
 pub fn save_odds_watches(watches: &[OddsWatch]) -> Result<()> {
     let path = smart_dir()?.join("odds.json");
     let json = serde_json::to_string_pretty(watches)?;
-    fs::write(&path, json)?;
+    atomic_write(&path, json.as_bytes())?;
     Ok(())
 }
 
@@ -352,7 +356,7 @@ pub fn load_monitor_config() -> Result<Option<MonitorConfig>> {
 pub fn save_monitor_config(config: &MonitorConfig) -> Result<()> {
     let path = smart_dir()?.join("monitor.json");
     let json = serde_json::to_string_pretty(config)?;
-    fs::write(&path, json)?;
+    atomic_write(&path, json.as_bytes())?;
     Ok(())
 }
 
@@ -466,7 +470,8 @@ pub fn prune_price_history(keep_hours: i64) -> Result<()> {
                 .unwrap_or(false)
         })
         .collect();
-    fs::write(&path, kept.join("\n") + if kept.is_empty() { "" } else { "\n" })?;
+    let content = kept.join("\n") + if kept.is_empty() { "" } else { "\n" };
+    atomic_write(&path, content.as_bytes())?;
     Ok(())
 }
 
@@ -483,6 +488,35 @@ pub fn load_peak_roi() -> Result<std::collections::HashMap<String, f64>> {
 
 pub fn save_peak_roi(peaks: &std::collections::HashMap<String, f64>) -> Result<()> {
     let path = smart_dir()?.join("peak_roi.json");
-    fs::write(&path, serde_json::to_string_pretty(peaks)?)?;
+    atomic_write(&path, serde_json::to_string_pretty(peaks)?.as_bytes())?;
     Ok(())
+}
+
+// ── Log pruning ────────────────────────────────────────────────
+
+/// Prune signals.jsonl — keep only last `keep_count` entries.
+pub fn prune_signals(keep_count: usize) -> Result<()> {
+    let path = smart_dir()?.join("signals.jsonl");
+    prune_jsonl_by_count(&path, keep_count)
+}
+
+/// Prune odds_alerts.jsonl — keep only last `keep_count` entries.
+pub fn prune_odds_alerts_log(keep_count: usize) -> Result<()> {
+    let path = smart_dir()?.join("odds_alerts.jsonl");
+    prune_jsonl_by_count(&path, keep_count)
+}
+
+/// Generic: keep last N lines of a jsonl file.
+fn prune_jsonl_by_count(path: &Path, keep_count: usize) -> Result<()> {
+    if !path.exists() {
+        return Ok(());
+    }
+    let data = fs::read_to_string(path)?;
+    let lines: Vec<&str> = data.lines().filter(|l| !l.is_empty()).collect();
+    if lines.len() <= keep_count {
+        return Ok(());
+    }
+    let kept = &lines[lines.len() - keep_count..];
+    let content = kept.join("\n") + "\n";
+    atomic_write(path, content.as_bytes())
 }

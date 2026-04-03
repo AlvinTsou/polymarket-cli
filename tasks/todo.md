@@ -15,13 +15,14 @@
 
 ## Current State
 
-- **Branch**: `feature/5m-crypto-trade` (17 commits ahead of main)
+- **Branch**: `feature/5m-crypto-trade` — pushed to origin (17 commits ahead of main)
 - **Signal**: 7-component, 4 exchanges (Binance + OKX + Hyperliquid + Bybit)
 - **Dashboard**: localhost:3456 (LaunchAgent), SM + Crypto split
 - **Code**: smart.rs ~5460 lines, crypto/ ~1640 lines (4 files)
+- **All CEX/DEX APIs verified**: 5 endpoints × 4 exchanges = all OK, no auth needed
 
 ## Next
 
+- [ ] Run 4-exchange monitor 24-48h, compare win rate vs old 4-component
 - [ ] Merge `feature/5m-crypto-trade` → main
-- [ ] Run 4-exchange monitor 24-48h, compare win rate
 - [ ] Weight tuning via backtest grid search (optional — need historical multi-exchange data)
