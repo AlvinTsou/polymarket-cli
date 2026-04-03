@@ -4479,14 +4479,20 @@ async fn cmd_telegram(command: TelegramCommand, output: &OutputFormat) -> Result
     }
 }
 
+/// Escape special chars for Telegram Markdown (v1).
+fn telegram_safe(s: &str) -> String {
+    s.replace('*', "").replace('_', " ").replace('`', "'").replace('[', "(").replace(']', ")")
+}
+
 async fn send_telegram_message(config: &TelegramConfig, text: &str) -> Result<()> {
     let url = format!(
         "https://api.telegram.org/bot{}/sendMessage",
         config.bot_token
     );
+    let safe_text = telegram_safe(text);
     let body = serde_json::json!({
         "chat_id": config.chat_id,
-        "text": text,
+        "text": safe_text,
         "parse_mode": "Markdown",
     });
     let resp: serde_json::Value = reqwest::Client::new()
@@ -4886,7 +4892,6 @@ async fn cmd_crypto_signal(asset_str: &str, output: &OutputFormat) -> Result<()>
         Some(&agg_futures), Some(&agg_spot),
     );
 
-    let has_futures = true;
     let futures_data = Some(agg_futures);
 
     match output {
@@ -4897,22 +4902,20 @@ async fn cmd_crypto_signal(asset_str: &str, output: &OutputFormat) -> Result<()>
             let c = &signal.components;
             if agg_spot.exchange_count >= 2 {
                 println!("--- {} Multi-Exchange Signal ({} exchanges + futures) ---", asset, agg_spot.exchange_count);
-            } else if has_futures {
-                println!("--- {} Enhanced Signal (spot + futures) ---", asset);
             } else {
-                println!("--- {} Momentum Signal (spot only) ---", asset);
+                println!("--- {} Enhanced Signal (spot + futures) ---", asset);
             }
             println!("Direction: {}  (confidence: {:.0}%)", signal.direction, signal.confidence * 100.0);
             println!("Price: ${:.2}", signal.price);
             println!();
             println!("Spot components:");
-            let (w1, w2, w3, w4) = if has_futures { (15.0, 10.0, 20.0, 20.0) } else { (30.0, 25.0, 25.0, 20.0) };
+            let (w1, w2, w3, w4) = (15.0, 10.0, 20.0, 20.0);
             println!("  Price mom 1m:  {:+.4}  (w={:.0}%)", c.price_mom_1m, w1);
             println!("  Price mom 5m:  {:+.4}  (w={:.0}%)", c.price_mom_5m, w2);
             println!("  OB imbalance:  {:+.4}  (w={:.0}%)", c.ob_imbalance, w3);
             println!("  Trade flow:    {:+.4}  (w={:.0}%)", c.trade_flow, w4);
             println!("  Volatility:    {:.4}   (threshold: 0.0030)", c.volatility);
-            if has_futures {
+            if futures_data.is_some() {
                 println!();
                 println!("Futures components:");
                 println!("  Funding sig:   {:+.4}  (w=15%)", c.funding_signal);
@@ -4987,7 +4990,7 @@ async fn cmd_crypto_backtest(asset_str: &str, hours: u32, output: &OutputFormat)
     let feed = crypto::feed::BinanceFeed::new();
 
     // Fetch historical 1m candles (max 1000 per request)
-    let limit = (hours * 60).min(1000);
+    let limit = (hours as u64 * 60).min(1000) as u32;
     println!("Fetching {}h of 1m candles for {}...", hours, asset);
     let candles = feed.fetch_klines(asset, "1m", limit).await?;
     println!("Got {} candles", candles.len());
@@ -5144,7 +5147,6 @@ async fn cmd_crypto_monitor(
                         .map(|(_, tr)| tr.clone())
                         .unwrap_or_default();
 
-                    let ex_count = agg_spot.exchange_count;
                     let signal = crypto::momentum::compute_signal_full(
                         asset, &candles, &binance_ob, &binance_trades,
                         Some(&agg_futures), Some(&agg_spot),

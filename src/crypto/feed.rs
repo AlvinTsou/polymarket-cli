@@ -14,7 +14,10 @@ pub struct BinanceFeed {
 impl BinanceFeed {
     pub fn new() -> Self {
         Self {
-            client: Client::new(),
+            client: Client::builder()
+                .timeout(std::time::Duration::from_secs(5))
+                .build()
+                .unwrap_or_default(),
         }
     }
 
@@ -159,7 +162,10 @@ pub struct BinanceFuturesFeed {
 impl BinanceFuturesFeed {
     pub fn new() -> Self {
         Self {
-            client: Client::new(),
+            client: Client::builder()
+                .timeout(std::time::Duration::from_secs(5))
+                .build()
+                .unwrap_or_default(),
         }
     }
 
@@ -302,7 +308,7 @@ pub struct OkxFeed {
 
 impl OkxFeed {
     pub fn new() -> Self {
-        Self { client: Client::new() }
+        Self { client: Client::builder().timeout(std::time::Duration::from_secs(5)).build().unwrap_or_default() }
     }
 
     fn spot_inst(asset: CryptoAsset) -> &'static str {
@@ -462,7 +468,7 @@ pub struct HyperliquidFeed {
 
 impl HyperliquidFeed {
     pub fn new() -> Self {
-        Self { client: Client::new() }
+        Self { client: Client::builder().timeout(std::time::Duration::from_secs(5)).build().unwrap_or_default() }
     }
 
     fn coin(asset: CryptoAsset) -> &'static str {
@@ -543,7 +549,7 @@ pub struct BybitFeed {
 
 impl BybitFeed {
     pub fn new() -> Self {
-        Self { client: Client::new() }
+        Self { client: Client::builder().timeout(std::time::Duration::from_secs(5)).build().unwrap_or_default() }
     }
 
     fn symbol(asset: CryptoAsset) -> &'static str {
@@ -741,13 +747,18 @@ pub async fn fetch_aggregated_futures(
         bybit.fetch_open_interest(asset),
     );
 
+    let binance_ok = b_all.is_ok();
     let binance = b_all.unwrap_or(FuturesData {
         funding_rate: 0.0, mark_price: 0.0, open_interest_usd: 0.0, liquidations: vec![],
     });
 
-    // Collect funding rates for averaging
-    let mut funding_rates = vec![binance.funding_rate];
-    let mut funding_count = 1u32;
+    // Collect funding rates for averaging — only include exchanges that succeeded
+    let mut funding_rates: Vec<f64> = Vec::new();
+    let mut funding_count = 0u32;
+    if binance_ok {
+        funding_rates.push(binance.funding_rate);
+        funding_count += 1;
+    }
     if let Ok(fr) = o_fr {
         funding_rates.push(fr);
         funding_count += 1;
@@ -762,12 +773,21 @@ pub async fn fetch_aggregated_futures(
         funding_count += 1;
     }
 
-    let avg_funding = funding_rates.iter().sum::<f64>() / funding_count as f64;
+    let avg_funding = if funding_count > 0 {
+        funding_rates.iter().sum::<f64>() / funding_count as f64
+    } else {
+        0.0
+    };
 
     // Sum OI across exchanges
     let mut total_oi = binance.open_interest_usd;
     if let Ok(oi) = o_oi {
-        total_oi += oi * binance.mark_price;
+        // OKX BTC-USDT-SWAP: 1 contract = 0.01 BTC; ETH-USDT-SWAP: 1 contract = 0.1 ETH
+        let contract_size = match asset {
+            CryptoAsset::BTC => 0.01,
+            CryptoAsset::ETH => 0.1,
+        };
+        total_oi += oi * contract_size * binance.mark_price;
     }
     if let Ok((_, oi)) = h_meta {
         total_oi += oi * binance.mark_price;
