@@ -421,7 +421,7 @@ pub enum CryptoCommand {
         max_per_day: f64,
 
         /// Minimum signal confidence (0.0-1.0)
-        #[arg(long, default_value = "0.3")]
+        #[arg(long, default_value = "0.5")]
         min_confidence: f64,
 
         /// Send notifications (macOS + Telegram)
@@ -3379,8 +3379,8 @@ fn evaluate_triggers(
         // Min position size filter: skip small/test positions (<$200)
         let sig_size: f64 = sig.size.parse().unwrap_or(0.0);
         if sig_size < 200.0 { continue; }
-        // Resolution horizon: only trade markets resolving within 30 days
-        if !market_within_horizon(&sig.market_title, 30) { continue; }
+        // Resolution horizon: only trade markets resolving within 14 days
+        if !market_within_horizon(&sig.market_title, 14) { continue; }
 
         let tag = sig.wallet_tag.as_deref().unwrap_or(&sig.wallet[..8.min(sig.wallet.len())]);
         triggers.push(TriggerEvent {
@@ -3537,16 +3537,15 @@ async fn cmd_monitor(
                     }
                 }
 
-                // Close follow positions on ClosePosition
+                // Log whale exits but do NOT auto-close our positions.
+                // Decoupled exit: we manage TP/SL/trailing/time-stop independently.
                 for sig in &all_signals {
                     if matches!(sig.signal_type, crate::smart::SignalType::ClosePosition) {
                         let exit_price: f64 = sig.price.parse().unwrap_or(0.0);
                         if exit_price > 0.0 {
                             let tag = sig.wallet_tag.as_deref().unwrap_or("unknown");
-                            let reason = format!("whale exit: {} closed", tag);
-                            if let Err(e) = store::close_follow_position(&sig.condition_id, &sig.outcome, exit_price, &reason) {
-                                eprintln!("warn: failed to close position: {e}");
-                            }
+                            eprintln!("  WHALE-EXIT (logged, not closing): {} {} @ {:.3} by {}",
+                                sig.market_title, sig.outcome, exit_price, tag);
                         }
                     }
                 }
@@ -3606,14 +3605,21 @@ async fn cmd_monitor(
                         let _ = store::prune_odds_alerts_log(2000);
                     }
 
-                    // Stop-loss + trailing stop
+                    // Self-managed exits: take-profit, stop-loss, trailing-stop, time-stop
+                    let take_profit_pct = 20.0f64;   // close at +20% ROI
                     let stop_loss_pct = -45.0f64;
-                    let trailing_activate_pct = 30.0f64;  // activate trailing stop after +30% ROI
-                    let trailing_drawdown_pct = 50.0f64;  // close if ROI drops 50% from peak
+                    let trailing_activate_pct = 15.0f64;  // activate trailing stop after +15% ROI
+                    let trailing_drawdown_pct = 40.0f64;  // close if ROI drops 40% from peak
+                    let time_stop_days = 7i64;            // close if open > 7 days
+                    let time_stop_min_roi = 5.0f64;       // ... and ROI < +5%
                     let mut peak_roi = store::load_peak_roi().unwrap_or_default();
                     let mut peak_changed = false;
 
                     for r in &open_positions {
+                        // Skip crypto positions — they have their own resolution logic
+                        if r.entry_reason.as_deref().map_or(false, |er| er.starts_with("crypto:")) {
+                            continue;
+                        }
                         let entry = r.effective_entry();
                         if entry <= 0.0 { continue; }
                         let pos_id = r.position_id.as_deref().unwrap_or(&r.condition_id);
@@ -3621,6 +3627,18 @@ async fn cmd_monitor(
                             if current <= 0.0 { continue; }
                             let pnl = calc_open_pnl(&r.side, r.amount_usdc, entry, current);
                             let roi = if r.amount_usdc > 0.0 { pnl / r.amount_usdc * 100.0 } else { 0.0 };
+
+                            // Take-profit
+                            if roi >= take_profit_pct {
+                                let reason = format!("take-profit: {:.1}% (target {:.0}%)", roi, take_profit_pct);
+                                if let Err(e) = store::close_follow_position(&r.condition_id, &r.outcome, current, &reason) {
+                                    eprintln!("warn: failed to close take-profit position: {e}");
+                                }
+                                peak_roi.remove(pos_id);
+                                peak_changed = true;
+                                eprintln!("  TAKE-PROFIT: {} @ {:.3} -> {:.3} ({:+.1}%)", r.market_title, entry, current, roi);
+                                continue;
+                            }
 
                             // Stop-loss
                             if roi <= stop_loss_pct {
@@ -3631,6 +3649,19 @@ async fn cmd_monitor(
                                 peak_roi.remove(pos_id);
                                 peak_changed = true;
                                 eprintln!("  STOP-LOSS: {} @ {:.3} -> {:.3} ({:+.1}%)", r.market_title, entry, current, roi);
+                                continue;
+                            }
+
+                            // Time-stop: close stale positions (> 7 days, ROI < +5%)
+                            let age_days = (Utc::now() - r.timestamp).num_days();
+                            if age_days >= time_stop_days && roi < time_stop_min_roi {
+                                let reason = format!("time-stop: {}d old, ROI {:.1}% < {:.0}%", age_days, roi, time_stop_min_roi);
+                                if let Err(e) = store::close_follow_position(&r.condition_id, &r.outcome, current, &reason) {
+                                    eprintln!("warn: failed to close time-stop position: {e}");
+                                }
+                                peak_roi.remove(pos_id);
+                                peak_changed = true;
+                                eprintln!("  TIME-STOP: {} ({}d, ROI {:.1}%) @ {:.3}", r.market_title, age_days, roi, current);
                                 continue;
                             }
 
@@ -5128,6 +5159,17 @@ async fn cmd_crypto_monitor(
                     continue;
                 }
 
+                // Time-of-day filter: only trade during US+EU overlap (08:00-20:00 ET)
+                let et_hour = {
+                    use chrono::Timelike;
+                    let et_offset = chrono::FixedOffset::west_opt(5 * 3600).unwrap();
+                    now.with_timezone(&et_offset).hour()
+                };
+                if et_hour < 8 || et_hour >= 20 {
+                    eprintln!("outside trading hours (ET {et_hour}:xx, need 08-20)");
+                    continue;
+                }
+
                 for &asset in &assets {
                     let (candles_res, agg_spot, agg_futures) = tokio::join!(
                         feed.fetch_klines(asset, "1m", 30),
@@ -5189,6 +5231,14 @@ async fn cmd_crypto_monitor(
                         _ => continue,
                     };
 
+                    // Tiered sizing: high confidence gets larger position
+                    let trade_amount = if signal.confidence >= 0.70 {
+                        (amount * 1.5).min(max_per_day - daily_spent)
+                    } else {
+                        amount
+                    };
+                    if trade_amount <= 0.0 { eprint!("{asset} budget, "); continue; }
+
                     let entry_price = 0.50;
                     let record = FollowRecord {
                         timestamp: now,
@@ -5198,7 +5248,7 @@ async fn cmd_crypto_monitor(
                         asset: token_id.clone(),
                         outcome: outcome.to_string(),
                         side: "BUY".to_string(),
-                        amount_usdc: amount,
+                        amount_usdc: trade_amount,
                         price: entry_price,
                         dry_run: true,
                         order_id: None,
@@ -5220,12 +5270,13 @@ async fn cmd_crypto_monitor(
 
                     trades_this_hour.push(now);
                     let window_mins = secs_until_end / 60;
-                    eprintln!("\n  TRADE: {asset} {} {} @ {:.2} (${:.2}) conf={:.0}% window={window_mins}m",
-                        signal.direction, market.question, entry_price, amount, signal.confidence * 100.0);
+                    eprintln!("\n  TRADE: {asset} {} {} @ {:.2} (${:.2}) conf={:.0}% score={:+.3} window={window_mins}m",
+                        signal.direction, market.question, entry_price, trade_amount, signal.confidence * 100.0,
+                        signal.components.raw_score);
 
                     if notify {
                         // macOS notification
-                        let notif_msg = format!("Crypto {asset}: {} {outcome} @ {entry_price:.2} (${amount:.2}) conf={:.0}%",
+                        let notif_msg = format!("Crypto {asset}: {} {outcome} @ {entry_price:.2} (${trade_amount:.2}) conf={:.0}%",
                             signal.direction, signal.confidence * 100.0);
                         let _ = std::process::Command::new("osascript")
                             .args(["-e", &format!(
@@ -5236,7 +5287,7 @@ async fn cmd_crypto_monitor(
 
                         // Telegram
                         if let Ok(Some(tg)) = store::load_telegram_config() {
-                            let text = format!("*PMCC Crypto Trade*\n{asset} {} {outcome} @ {entry_price:.2} (${amount:.2})\nConf: {:.0}%\n{}",
+                            let text = format!("*PMCC Crypto Trade*\n{asset} {} {outcome} @ {entry_price:.2} (${trade_amount:.2})\nConf: {:.0}%\n{}",
                                 signal.direction, signal.confidence * 100.0, market.question);
                             let _ = send_telegram_message(&tg, &text).await;
                         }
@@ -5318,10 +5369,14 @@ async fn resolve_crypto_positions(feed: &crypto::feed::BinanceFeed) -> u32 {
             r.realized_pnl = Some(r.amount_usdc * (0.05 / 0.50 - 1.0));
         }
 
+        let move_pct = if open_price > 0.0 { (close_price - open_price) / open_price * 100.0 } else { 0.0 };
         r.status = Some(crate::smart::TradeStatus::Closed);
         r.closed_at = Some(Utc::now());
-        r.exit_reason = Some(format!("5m-resolved: actual={actual_dir} {open_price:.2}->{close_price:.2} {}",
+        r.exit_reason = Some(format!("5m-resolved: actual={actual_dir} {open_price:.2}->{close_price:.2} ({move_pct:+.3}%) {}",
             if won { "WIN" } else { "LOSS" }));
+        eprintln!("  RESOLVED: {} pred={} actual={actual_dir} {open_price:.2}->{close_price:.2} ({move_pct:+.3}%) {} | {}",
+            r.market_title, r.outcome, if won { "WIN" } else { "LOSS" },
+            r.entry_reason.as_deref().unwrap_or(""));
         changed = true;
         resolved += 1;
     }
