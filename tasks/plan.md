@@ -1,4 +1,94 @@
-# Sprint 12: Multi-Exchange Signal Integration
+# Sprint 13: Strategy Overhaul — Smart Money Reverse + Crypto Signal Tuning
+
+## Status: PLANNING
+
+## Motivation
+
+Paper trade results (13 days, 234 trades):
+- **Smart Money**: 170 closed, -$326.50, 22% win rate — catastrophic
+- **Crypto 5m**: 30 closed, -$13.20, 47% win rate — near-random but salvageable
+- Root cause: following whales with delay = systematic buy-high sell-low
+
+## Phase A: Smart Money Exit Logic Overhaul
+
+**Goal**: Stop bleeding from whale-follow strategy. Decouple exit from whale behavior.
+
+### Changes
+
+1. **Remove whale-exit auto-close** (`smart.rs:3541-3552`)
+   - When whale closes, log it but do NOT close our position
+   - Add field `whale_exited_at: Option<DateTime>` to FollowRecord for tracking
+
+2. **Self-managed exit rules** (replace whale-exit):
+   - Take-profit: close at +20% ROI
+   - Trailing-stop: activate at +15% (lower from +30%), drawdown 40% (tighter from 50%)
+   - Stop-loss: keep -45% but check every 60s not every 180s (reduce slippage)
+   - Time-stop: close if open > 7 days with < +5% ROI (dead position)
+
+3. **Raise entry bar** (`smart.rs:3324-3429`):
+   - `min_wallets`: 2 → 3 (require 3 whale consensus)
+   - Price range: 0.15-0.80 (already in place, verify enforced)
+   - Market horizon: 30 days → 14 days (shorter = less uncertainty)
+
+4. **Whale-exit-as-entry experiment** (Phase A.2):
+   - New trigger type: when whale exits at a loss → we enter same direction
+   - Logic: whale panic-sold, market overreacted, we catch the bounce
+   - Paper trade only, separate tracking tag `entry_reason: "fade-whale-exit"`
+
+### Files to modify
+- `src/commands/smart.rs`: monitor loop exit logic, trigger evaluation
+- `src/smart/mod.rs`: FollowRecord struct (add whale_exited_at)
+- `src/smart/store.rs`: close_follow_position (add time-stop)
+
+## Phase B: Crypto 5m Signal Tuning
+
+**Goal**: Improve 47% win rate by filtering noise and adding CLOB signal.
+
+### Changes
+
+1. **Raise confidence threshold** (`smart.rs:5157`)
+   - Default min_confidence: 0.30 → 0.50
+   - Add tiered sizing: conf >= 0.70 → $15, conf >= 0.50 → $10
+
+2. **Add CLOB price as 8th signal component** (`momentum.rs`)
+   - Fetch Polymarket CLOB midpoint for Up/Down tokens
+   - If CLOB agrees with momentum direction → confidence boost +0.05
+   - If CLOB disagrees (e.g., Up token < 0.45 but momentum says UP) → SKIP
+   - Weight: 0.10 (redistribute from price_mom_5m 0.10→0.05, oi 0.10→0.05)
+
+3. **Time-of-day filter** (`smart.rs:5122`)
+   - Only trade during US+EU overlap: 08:00-20:00 ET
+   - Asian session (20:00-08:00 ET) has thinner books, more false signals
+
+4. **Resolution verification** (`smart.rs:5258-5335`)
+   - Log actual vs predicted with component breakdown for post-analysis
+   - Track which components were correct/wrong per trade
+
+### Files to modify
+- `src/crypto/momentum.rs`: add CLOB component, adjust weights
+- `src/crypto/market.rs`: fetch CLOB midpoint price
+- `src/commands/smart.rs`: confidence threshold, time filter, tiered sizing
+
+## Phase C: Backtest & Validation
+
+1. Export all 234 paper trades to CSV with full signal components
+2. Backtest Phase A rules against historical Smart Money trades
+3. Backtest Phase B rules against historical Crypto trades
+4. Compare projected PnL vs actual
+5. Run new config for 48h paper trade before considering real money
+
+## Risk Assessment
+
+| Risk | Mitigation |
+|------|------------|
+| Reverse strategy also loses | Paper trade only, separate tag, easy to disable |
+| CLOB data adds latency | Parallel fetch with existing tokio::join! |
+| Tighter stops increase trade count | Daily budget cap unchanged ($100 SM, $60 crypto) |
+| Reducing trades misses real opportunities | Track skipped-by-filter signals for analysis |
+
+---
+
+# Sprint 12: Multi-Exchange Signal Integration (COMPLETED)
 
 ## Status: ALL PHASES COMPLETE + ALL ISSUES RESOLVED
 
