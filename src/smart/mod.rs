@@ -290,7 +290,12 @@ pub struct MonitorConfig {
     pub amount: f64,
     pub max_per_day: f64,
     pub notify: bool,
+    /// Max open positions per market group (e.g., "win the 2026 masters tournament")
+    #[serde(default = "default_max_per_group")]
+    pub max_per_group: u32,
 }
+
+fn default_max_per_group() -> u32 { 2 }
 
 impl Default for MonitorConfig {
     fn default() -> Self {
@@ -305,6 +310,7 @@ impl Default for MonitorConfig {
             amount: 10.0,
             max_per_day: 50.0,
             notify: false,
+            max_per_group: 2,
         }
     }
 }
@@ -341,6 +347,27 @@ pub struct TriggerEvent {
     pub condition_id: String,
     pub asset: String,
     pub signal_id: String,
+}
+
+/// Extract a group key from a market title to detect related markets.
+/// e.g., "Will Casey Jarvis win the 2026 Masters tournament?" → "win the 2026 masters tournament"
+/// e.g., "Will Gavin Newsom win the 2028 Democratic presidential nomination?" → "win the 2028 democratic presidential nomination"
+pub fn market_group_key(title: &str) -> String {
+    let lower = title.to_lowercase();
+    // Strip leading "will <name> " pattern — names are typically 1-4 words before a verb
+    let verbs = ["win", "be ", "become", "get ", "receive", "lead ", "finish", "qualify", "advance", "make"];
+    for verb in &verbs {
+        if let Some(pos) = lower.find(verb) {
+            // Only strip if the verb appears within the first ~60 chars (it's the main predicate, not a nested clause)
+            if pos < 60 {
+                let suffix = &lower[pos..];
+                // Remove trailing "?" and whitespace
+                return suffix.trim_end_matches('?').trim().to_string();
+            }
+        }
+    }
+    // Fallback: return the whole title lowercased, trimmed
+    lower.trim_end_matches('?').trim().to_string()
 }
 
 // ── Odds Monitoring ─────────────────────────────────────────────

@@ -309,6 +309,10 @@ pub enum SmartCommand {
         #[arg(long, default_value = "50")]
         max_per_day: f64,
 
+        /// Max open positions per market group (prevents flooding from related markets)
+        #[arg(long, default_value = "2")]
+        max_per_group: u32,
+
         /// Send macOS + Telegram notifications on trigger
         #[arg(long)]
         notify: bool,
@@ -546,6 +550,7 @@ pub async fn execute(
             paper_trade,
             amount,
             max_per_day,
+            max_per_group,
             notify,
             save,
             load,
@@ -553,7 +558,7 @@ pub async fn execute(
             cmd_monitor(
                 client, &interval, &min_confidence, min_wallets,
                 market_include.as_deref(), market_exclude.as_deref(),
-                odds_threshold, paper_trade, amount, max_per_day,
+                odds_threshold, paper_trade, amount, max_per_day, max_per_group,
                 notify, save, load, &output,
             )
             .await
@@ -3440,6 +3445,7 @@ async fn cmd_monitor(
     paper_trade: bool,
     amount: f64,
     max_per_day: f64,
+    max_per_group: u32,
     notify: bool,
     save: bool,
     load: bool,
@@ -3464,6 +3470,7 @@ async fn cmd_monitor(
             amount,
             max_per_day,
             notify,
+            max_per_group,
         }
     };
 
@@ -3488,8 +3495,8 @@ async fn cmd_monitor(
     if config.odds_threshold > 0.0 {
         println!("  Odds threshold: {:.1}%", config.odds_threshold);
     }
-    println!("  Paper trade:    {} (${:.2}/trade, ${:.2}/day max)",
-        if config.paper_trade { "ON" } else { "OFF" }, config.amount, config.max_per_day);
+    println!("  Paper trade:    {} (${:.2}/trade, ${:.2}/day max, {} max/group)",
+        if config.paper_trade { "ON" } else { "OFF" }, config.amount, config.max_per_day, config.max_per_group);
     println!("  Notifications:  {}", if config.notify { "ON" } else { "OFF" });
     println!("  Press Ctrl+C to stop.\n");
 
@@ -3736,14 +3743,22 @@ async fn cmd_monitor(
                         .iter().map(|(t, _)| (t.condition_id.clone(), t.outcome.clone())).collect();
                     let mut pending_markets: std::collections::HashSet<String> = pending_triggers
                         .iter().map(|(t, _)| t.condition_id.clone()).collect();
-                    // Also include existing open positions
+                    // Also include existing open positions + group counts
+                    let mut group_counts: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
                     {
                         let existing = store::load_follow_records().unwrap_or_default();
                         for r in &existing {
                             if r.dry_run && r.is_open() {
                                 pending_markets.insert(r.condition_id.clone());
+                                let gk = crate::smart::market_group_key(&r.market_title);
+                                *group_counts.entry(gk).or_insert(0) += 1;
                             }
                         }
+                    }
+                    // Count pending triggers toward group limits too
+                    for (t, _) in &pending_triggers {
+                        let gk = crate::smart::market_group_key(&t.market_title);
+                        *group_counts.entry(gk).or_insert(0) += 1;
                     }
 
                     for trigger in &triggers {
@@ -3761,9 +3776,17 @@ async fn cmd_monitor(
                         if pending_markets.contains(&trigger.condition_id) {
                             continue;
                         }
+                        // Group limit: skip if too many positions in same market group
+                        let gk = crate::smart::market_group_key(&trigger.market_title);
+                        let gc = group_counts.get(&gk).copied().unwrap_or(0);
+                        if gc >= config.max_per_group {
+                            eprintln!("  GROUP-LIMIT ({gc}/{} open): {}", config.max_per_group, trigger.market_title);
+                            continue;
+                        }
                         pending_triggers.push((trigger.clone(), Utc::now()));
                         pending_cids.insert(key);
                         pending_markets.insert(trigger.condition_id.clone());
+                        *group_counts.entry(gk).or_insert(0) += 1;
                         pending_count += 1;
                     }
 
@@ -3798,12 +3821,27 @@ async fn cmd_monitor(
                             .filter(|r| r.dry_run && r.is_open())
                             .map(|r| r.condition_id.clone())
                             .collect();
+                        // Group counts for execution-phase limit
+                        let mut exec_group_counts: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+                        for r in &existing_follows {
+                            if r.dry_run && r.is_open() {
+                                let gk = crate::smart::market_group_key(&r.market_title);
+                                *exec_group_counts.entry(gk).or_insert(0) += 1;
+                            }
+                        }
 
                         for trigger in &confirmed {
                             if open_positions.contains(&(trigger.condition_id.clone(), trigger.outcome.clone())) {
                                 continue;
                             }
                             if open_markets.contains(&trigger.condition_id) {
+                                continue;
+                            }
+                            // Group limit at execution time
+                            let gk = crate::smart::market_group_key(&trigger.market_title);
+                            let gc = exec_group_counts.get(&gk).copied().unwrap_or(0);
+                            if gc >= config.max_per_group {
+                                eprintln!("  GROUP-LIMIT-EXEC ({gc}/{} open): {}", config.max_per_group, trigger.market_title);
                                 continue;
                             }
                             if today_spent + spent + config.amount > config.max_per_day {
@@ -3847,9 +3885,10 @@ async fn cmd_monitor(
                             if let Err(e) = store::append_follow_record(&record) {
                                 eprintln!("warn: failed to save follow record: {e}");
                             }
-                            // Track this trade to prevent hedge in same batch
+                            // Track this trade to prevent hedge/group-flood in same batch
                             open_positions.insert((trigger.condition_id.clone(), trigger.outcome.clone()));
                             open_markets.insert(trigger.condition_id.clone());
+                            *exec_group_counts.entry(gk).or_insert(0) += 1;
                             paper_count += 1;
                             spent += config.amount;
                         }
