@@ -613,6 +613,7 @@ async fn cmd_discover(
                     discovery_periods: None,
                     last_seen_at: None,
                     stale: None,
+                    disabled: None,
                 };
                 if store::add_wallet(wallet)? {
                     watched += 1;
@@ -704,6 +705,7 @@ async fn cmd_auto_renew(
                 discovery_periods: Some(periods_found.clone()),
                 last_seen_at: Some(now),
                 stale: Some(false),
+                disabled: None,
             };
             if store::add_wallet(wallet)? { added += 1; }
         }
@@ -1272,6 +1274,7 @@ async fn cmd_discover_whales(
                 discovery_periods: None,
                 last_seen_at: Some(now),
                 stale: Some(false),
+                disabled: None,
             };
             if store::add_wallet(wallet)? { added += 1; }
         }
@@ -1315,6 +1318,7 @@ fn cmd_watch(address: &str, tag: Option<String>, output: &OutputFormat) -> Resul
         discovery_periods: None,
         last_seen_at: None,
         stale: None,
+        disabled: None,
     };
 
     if store::add_wallet(wallet)? {
@@ -1385,6 +1389,7 @@ async fn cmd_scan(
                 discovery_periods: None,
                 last_seen_at: None,
                 stale: None,
+                disabled: None,
             }]
         }
         None => {
@@ -1403,6 +1408,9 @@ async fn cmd_scan(
     let mut scan_summaries: Vec<ScanSummary> = Vec::new();
 
     for wallet in &wallets {
+        if wallet.disabled == Some(true) {
+            continue;
+        }
         match tracker::scan_wallet(client, &wallet.address).await {
             Ok((changes, snapshot)) => {
                 let sigs = signals::generate_signals(wallet, &changes);
@@ -1739,6 +1747,9 @@ async fn cmd_auto_follow(
     let mut scan_summaries: Vec<ScanSummary> = Vec::new();
 
     for wallet in &wallets {
+        if wallet.disabled == Some(true) {
+            continue;
+        }
         match tracker::scan_wallet(client, &wallet.address).await {
             Ok((changes, snapshot)) => {
                 let sigs = signals::generate_signals(wallet, &changes);
@@ -3527,6 +3538,9 @@ async fn cmd_monitor(
                 let mut all_signals = Vec::new();
                 let mut scan_errors = 0u32;
                 for wallet in &wallets {
+                    if wallet.disabled == Some(true) {
+                        continue;
+                    }
                     match tracker::scan_wallet(client, &wallet.address).await {
                         Ok((changes, _snapshot)) => {
                             let sigs = signals::generate_signals(wallet, &changes);

@@ -20,6 +20,8 @@ pub struct WatchedWallet {
     pub last_seen_at: Option<DateTime<Utc>>,
     #[serde(default)]
     pub stale: Option<bool>,
+    #[serde(default)]
+    pub disabled: Option<bool>,
 }
 
 /// PnL snapshot for a wallet at a point in time.
