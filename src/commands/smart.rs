@@ -412,8 +412,8 @@ pub enum CryptoCommand {
         #[arg(default_value = "btc")]
         asset: String,
 
-        /// USDC amount per paper trade
-        #[arg(long, default_value = "10")]
+        /// USDC amount per paper trade (base; tiered sizing scales up by confidence)
+        #[arg(long, default_value = "5")]
         amount: f64,
 
         /// Max trades per hour
@@ -424,8 +424,8 @@ pub enum CryptoCommand {
         #[arg(long, default_value = "60")]
         max_per_day: f64,
 
-        /// Minimum signal confidence (0.0-1.0)
-        #[arg(long, default_value = "0.5")]
+        /// Minimum signal confidence (0.0-1.0); 0.5 ≈ coin flip, 0.6 = modest edge
+        #[arg(long, default_value = "0.6")]
         min_confidence: f64,
 
         /// Send notifications (macOS + Telegram)
@@ -5270,11 +5270,13 @@ async fn cmd_crypto_monitor(
                         _ => continue,
                     };
 
-                    // Tiered sizing: high confidence gets larger position
-                    let trade_amount = if signal.confidence >= 0.70 {
+                    // Two-tier sizing: scale position with signal confidence
+                    let trade_amount = if signal.confidence >= 0.75 {
+                        (amount * 2.0).min(max_per_day - daily_spent)
+                    } else if signal.confidence >= 0.65 {
                         (amount * 1.5).min(max_per_day - daily_spent)
                     } else {
-                        amount
+                        amount.min(max_per_day - daily_spent)
                     };
                     if trade_amount <= 0.0 { eprint!("{asset} budget, "); continue; }
 

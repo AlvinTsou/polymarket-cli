@@ -1,6 +1,6 @@
 # Sprint 13: Strategy Overhaul — Smart Money Reverse + Crypto Signal Tuning
 
-## Status: PLANNING
+## Status: PHASE A+B IMPLEMENTED, PHASE B FOLLOW-UP IN PROGRESS
 
 ## Motivation
 
@@ -68,6 +68,45 @@ Paper trade results (13 days, 234 trades):
 - `src/crypto/momentum.rs`: add CLOB component, adjust weights
 - `src/crypto/market.rs`: fetch CLOB midpoint price
 - `src/commands/smart.rs`: confidence threshold, time filter, tiered sizing
+
+## Phase B Follow-up: Real-data Tuning (2026-05-05)
+
+**Trigger**: 1 month of post-Phase-B paper trades (836 closed total).
+
+| Category | Trades | WR | PnL | ROI |
+|----------|--------|----|----|-----|
+| Smart Money | 632 | 66% | +$276.13 | +4.4% |
+| Crypto 5m | 204 | 50% | +$22.50 | +0.9% |
+
+Crypto 5m WR is essentially random; ROI barely positive — net-negative once
+real-money fees factored in. Phase B baseline parameters need tightening.
+
+### Changes
+
+1. **Lower base trade size** (`smart.rs:417`)
+   - Default `amount`: $10 → $5
+   - Reason: shrink exposure on noise-region signals; tiered sizing still scales up
+     for high-confidence trades
+
+2. **Raise default confidence threshold** (`smart.rs:429`)
+   - Default `min_confidence`: 0.5 → 0.6
+   - Reason: 0.5 = no edge over coin flip; require modest signal strength
+
+3. **Two-tier sizing** (`smart.rs:5288-5292`)
+   - Old: `>= 0.70 → 1.5x`, else `1.0x`
+   - New: `>= 0.75 → 2.0x`, `>= 0.65 → 1.5x`, else `1.0x`
+   - Effective sizes: low=$5, medium=$7.5, high=$10 (same nominal high as before)
+
+4. **Sync LaunchAgent** (`~/Library/LaunchAgents/com.pmcc.crypto.plist`)
+   - amount: 10 → 5
+   - min-confidence: 0.5 → 0.6
+   - max-per-day: 100 unchanged (room for ~20 mid-tier or ~10 high-tier/day)
+
+### Validation
+
+- Run 48h after restart, then re-run paper trade analysis
+- Expect: fewer trades/day, higher WR (target ≥55%), ROI improvement
+- If WR doesn't improve → signal itself is noisy, escalate B.3 (CLOB component)
 
 ## Phase C: Backtest & Validation
 

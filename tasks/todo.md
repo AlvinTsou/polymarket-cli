@@ -17,11 +17,11 @@
 
 ## Session State
 
-- **timestamp**: 2026-04-04T18:15:00+08:00
+- **timestamp**: 2026-05-05T00:00:00+08:00
 - **phase**: implementing
-- **last task**: Sprint 13 Phase A+B implemented, monitors restarted, old paper trades archived
+- **last task**: Sprint 13 Phase B follow-up — tighten crypto 5m defaults based on 1-month data
 - **blockers**: none
-- **next actions**: Wait 48h for new data → run C.4 comparison → consider A.6 fade experiment
+- **next actions**: Run 48h after restart → re-evaluate WR/ROI → consider B.3 (CLOB component) if no improvement
 
 ## Current State
 
@@ -63,6 +63,16 @@ Stop-loss slippage: set -45% but often triggers at -87%~-99% (3min scan too slow
 - [x] B.4 Add time-of-day filter: only trade 08:00-20:00 ET
 - [x] B.5 Log component breakdown on resolution for post-analysis
 - [x] B.6 Test: restart crypto monitor with new config (PID 88665, conf 0.50 default)
+
+### Phase B Follow-up (2026-05-05): Real-data Tuning
+After 1 month live: SM 66% WR / +$276, Crypto 50% WR / +$22.5 (random region).
+- [x] B.7 Lower default amount: $10 → $5 (smart.rs:417)
+- [x] B.8 Raise default min_confidence: 0.5 → 0.6 (smart.rs:429)
+- [x] B.9 Two-tier sizing: ≥0.65 → 1.5x, ≥0.75 → 2x (smart.rs:5288-5294)
+- [x] B.10 Update LaunchAgent plist (amount=5, min-confidence=0.6)
+- [x] B.11 cargo build --release
+- [x] B.12 launchctl reload com.pmcc.crypto, new PID 47268 with new args
+- [ ] B.13 Wait 48h, re-run paper trade analysis, compare WR/ROI
 
 ### Phase C: Backtest & Validation
 - [ ] C.1 Export 234 paper trades to CSV with signal components
