@@ -297,7 +297,9 @@ pub struct MonitorConfig {
     pub max_per_group: u32,
 }
 
-fn default_max_per_group() -> u32 { 2 }
+fn default_max_per_group() -> u32 {
+    2
+}
 
 impl Default for MonitorConfig {
     fn default() -> Self {
@@ -357,7 +359,9 @@ pub struct TriggerEvent {
 pub fn market_group_key(title: &str) -> String {
     let lower = title.to_lowercase();
     // Strip leading "will <name> " pattern — names are typically 1-4 words before a verb
-    let verbs = ["win", "be ", "become", "get ", "receive", "lead ", "finish", "qualify", "advance", "make"];
+    let verbs = [
+        "win", "be ", "become", "get ", "receive", "lead ", "finish", "qualify", "advance", "make",
+    ];
     for verb in &verbs {
         if let Some(pos) = lower.find(verb) {
             // Only strip if the verb appears within the first ~60 chars (it's the main predicate, not a nested clause)

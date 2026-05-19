@@ -1,4 +1,7 @@
-use super::{AggregatedSpot, Candle, Direction, FuturesData, MomentumSignal, OrderBook, SignalComponents, Trade, CryptoAsset};
+use super::{
+    AggregatedSpot, Candle, CryptoAsset, Direction, FuturesData, MomentumSignal, OrderBook,
+    SignalComponents, Trade,
+};
 
 /// Weights for basic signal (no futures data).
 const W_MOM_1M: f64 = 0.30;
@@ -242,7 +245,11 @@ fn return_volatility(candles: &[Candle], n: usize) -> f64 {
     if candles.len() < 2 {
         return 0.0;
     }
-    let start = if candles.len() > n { candles.len() - n } else { 0 };
+    let start = if candles.len() > n {
+        candles.len() - n
+    } else {
+        0
+    };
     let returns: Vec<f64> = candles[start..]
         .windows(2)
         .filter_map(|w| {
@@ -268,7 +275,11 @@ fn candle_ob_proxy(candles: &[Candle], n: usize) -> f64 {
     if candles.len() < 2 {
         return 0.0;
     }
-    let start = if candles.len() > n { candles.len() - n } else { 0 };
+    let start = if candles.len() > n {
+        candles.len() - n
+    } else {
+        0
+    };
     let values: Vec<f64> = candles[start..]
         .iter()
         .filter_map(|c| {
@@ -295,7 +306,11 @@ fn candle_flow_proxy(candles: &[Candle], n: usize) -> f64 {
     if candles.len() < 2 {
         return 0.0;
     }
-    let start = if candles.len() > n { candles.len() - n } else { 0 };
+    let start = if candles.len() > n {
+        candles.len() - n
+    } else {
+        0
+    };
     let mut buy_vol = 0.0;
     let mut sell_vol = 0.0;
     for c in &candles[start..] {
@@ -323,8 +338,10 @@ fn compute_signal_from_candles(asset: CryptoAsset, candles: &[Candle]) -> Moment
     let trade_flow = candle_flow_proxy(candles, 5);
     let volatility = return_volatility(candles, 15);
 
-    let raw_score =
-        W_MOM_1M * price_mom_1m + W_MOM_5M * price_mom_5m + W_OB * ob_imbalance + W_FLOW * trade_flow;
+    let raw_score = W_MOM_1M * price_mom_1m
+        + W_MOM_5M * price_mom_5m
+        + W_OB * ob_imbalance
+        + W_FLOW * trade_flow;
 
     let (direction, confidence) = if volatility > VOL_THRESHOLD {
         (Direction::Skip, 0.0)

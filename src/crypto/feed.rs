@@ -1,7 +1,9 @@
 use anyhow::{Context, Result};
 use reqwest::Client;
 
-use super::{AggregatedSpot, Candle, CryptoAsset, FuturesData, Liquidation, OrderBook, OrderBookLevel, Trade};
+use super::{
+    AggregatedSpot, Candle, CryptoAsset, FuturesData, Liquidation, OrderBook, OrderBookLevel, Trade,
+};
 
 const BINANCE_BASE: &str = "https://api.binance.com/api/v3";
 const BINANCE_FAPI: &str = "https://fapi.binance.com";
@@ -232,9 +234,7 @@ impl BinanceFuturesFeed {
     /// Fetch recent forced liquidation orders (last ~100).
     pub async fn fetch_liquidations(&self, asset: CryptoAsset) -> Result<Vec<Liquidation>> {
         let symbol = Self::futures_symbol(asset);
-        let url = format!(
-            "{BINANCE_FAPI}/fapi/v1/allForceOrders?symbol={symbol}&limit=100"
-        );
+        let url = format!("{BINANCE_FAPI}/fapi/v1/allForceOrders?symbol={symbol}&limit=100");
 
         #[derive(serde::Deserialize)]
         #[serde(rename_all = "camelCase")]
@@ -308,7 +308,12 @@ pub struct OkxFeed {
 
 impl OkxFeed {
     pub fn new() -> Self {
-        Self { client: Client::builder().timeout(std::time::Duration::from_secs(5)).build().unwrap_or_default() }
+        Self {
+            client: Client::builder()
+                .timeout(std::time::Duration::from_secs(5))
+                .build()
+                .unwrap_or_default(),
+        }
     }
 
     fn spot_inst(asset: CryptoAsset) -> &'static str {
@@ -331,20 +336,35 @@ impl OkxFeed {
         let url = format!("{OKX_BASE}/api/v5/market/books?instId={inst}&sz=20");
 
         #[derive(serde::Deserialize)]
-        struct Resp { data: Vec<BookData> }
+        struct Resp {
+            data: Vec<BookData>,
+        }
         #[derive(serde::Deserialize)]
-        struct BookData { bids: Vec<Vec<String>>, asks: Vec<Vec<String>> }
+        struct BookData {
+            bids: Vec<Vec<String>>,
+            asks: Vec<Vec<String>>,
+        }
 
-        let resp: Resp = self.client.get(&url).send().await
+        let resp: Resp = self
+            .client
+            .get(&url)
+            .send()
+            .await
             .context("okx books request failed")?
-            .json().await
+            .json()
+            .await
             .context("okx books parse failed")?;
 
         let book = resp.data.into_iter().next().context("okx books empty")?;
         let parse = |raw: Vec<Vec<String>>| -> Vec<OrderBookLevel> {
-            raw.into_iter().filter_map(|l| {
-                Some(OrderBookLevel { price: l.first()?.parse().ok()?, qty: l.get(1)?.parse().ok()? })
-            }).collect()
+            raw.into_iter()
+                .filter_map(|l| {
+                    Some(OrderBookLevel {
+                        price: l.first()?.parse().ok()?,
+                        qty: l.get(1)?.parse().ok()?,
+                    })
+                })
+                .collect()
         };
 
         Ok(OrderBook {
@@ -360,23 +380,39 @@ impl OkxFeed {
         let url = format!("{OKX_BASE}/api/v5/market/trades?instId={inst}&limit=500");
 
         #[derive(serde::Deserialize)]
-        struct Resp { data: Vec<TradeData> }
+        struct Resp {
+            data: Vec<TradeData>,
+        }
         #[derive(serde::Deserialize)]
-        struct TradeData { px: String, sz: String, side: String, ts: String }
+        struct TradeData {
+            px: String,
+            sz: String,
+            side: String,
+            ts: String,
+        }
 
-        let resp: Resp = self.client.get(&url).send().await
+        let resp: Resp = self
+            .client
+            .get(&url)
+            .send()
+            .await
             .context("okx trades request failed")?
-            .json().await
+            .json()
+            .await
             .context("okx trades parse failed")?;
 
-        let trades = resp.data.into_iter().filter_map(|t| {
-            Some(Trade {
-                price: t.px.parse().ok()?,
-                qty: t.sz.parse().ok()?,
-                is_buyer_maker: t.side == "sell", // OKX: side=sell means taker sold
-                time: t.ts.parse().ok()?,
+        let trades = resp
+            .data
+            .into_iter()
+            .filter_map(|t| {
+                Some(Trade {
+                    price: t.px.parse().ok()?,
+                    qty: t.sz.parse().ok()?,
+                    is_buyer_maker: t.side == "sell", // OKX: side=sell means taker sold
+                    time: t.ts.parse().ok()?,
+                })
             })
-        }).collect();
+            .collect();
         Ok(trades)
     }
 
@@ -386,17 +422,28 @@ impl OkxFeed {
         let url = format!("{OKX_BASE}/api/v5/public/funding-rate?instId={inst}");
 
         #[derive(serde::Deserialize)]
-        struct Resp { data: Vec<FrData> }
+        struct Resp {
+            data: Vec<FrData>,
+        }
         #[derive(serde::Deserialize)]
         #[serde(rename_all = "camelCase")]
-        struct FrData { funding_rate: String }
+        struct FrData {
+            funding_rate: String,
+        }
 
-        let resp: Resp = self.client.get(&url).send().await
+        let resp: Resp = self
+            .client
+            .get(&url)
+            .send()
+            .await
             .context("okx funding-rate request failed")?
-            .json().await
+            .json()
+            .await
             .context("okx funding-rate parse failed")?;
 
-        let rate = resp.data.first()
+        let rate = resp
+            .data
+            .first()
             .and_then(|d| d.funding_rate.parse::<f64>().ok())
             .unwrap_or(0.0);
         Ok(rate)
@@ -408,18 +455,29 @@ impl OkxFeed {
         let url = format!("{OKX_BASE}/api/v5/public/open-interest?instType=SWAP&instId={inst}");
 
         #[derive(serde::Deserialize)]
-        struct Resp { data: Vec<OiData> }
+        struct Resp {
+            data: Vec<OiData>,
+        }
         #[derive(serde::Deserialize)]
-        struct OiData { oi: String }
+        struct OiData {
+            oi: String,
+        }
 
-        let resp: Resp = self.client.get(&url).send().await
+        let resp: Resp = self
+            .client
+            .get(&url)
+            .send()
+            .await
             .context("okx open-interest request failed")?
-            .json().await
+            .json()
+            .await
             .context("okx open-interest parse failed")?;
 
         // OI is in contracts; for USDT-margined, 1 contract = 1 unit of base asset
         // We return raw value — caller can multiply by price if needed
-        let oi = resp.data.first()
+        let oi = resp
+            .data
+            .first()
             .and_then(|d| d.oi.parse::<f64>().ok())
             .unwrap_or(0.0);
         Ok(oi)
@@ -428,28 +486,57 @@ impl OkxFeed {
     /// Fetch recent liquidation orders.
     pub async fn fetch_liquidations(&self, asset: CryptoAsset) -> Result<Vec<Liquidation>> {
         let inst = Self::swap_inst(asset);
-        let url = format!("{OKX_BASE}/api/v5/public/liquidation-orders?instType=SWAP&instId={inst}&limit=100&state=filled");
+        let url = format!(
+            "{OKX_BASE}/api/v5/public/liquidation-orders?instType=SWAP&instId={inst}&limit=100&state=filled"
+        );
 
         #[derive(serde::Deserialize)]
-        struct Resp { data: Vec<LiqWrapper> }
+        struct Resp {
+            data: Vec<LiqWrapper>,
+        }
         #[derive(serde::Deserialize)]
-        struct LiqWrapper { details: Vec<LiqDetail> }
+        struct LiqWrapper {
+            details: Vec<LiqDetail>,
+        }
         #[derive(serde::Deserialize)]
         #[serde(rename_all = "camelCase")]
-        struct LiqDetail { side: String, bkPx: String, sz: String, ts: String }
+        struct LiqDetail {
+            side: String,
+            bkPx: String,
+            sz: String,
+            ts: String,
+        }
 
-        let resp: Resp = self.client.get(&url).send().await
+        let resp: Resp = self
+            .client
+            .get(&url)
+            .send()
+            .await
             .context("okx liquidation-orders request failed")?
-            .json().await
+            .json()
+            .await
             .context("okx liquidation-orders parse failed")?;
 
         let mut liqs = Vec::new();
         for wrapper in resp.data {
             for d in wrapper.details {
-                if let (Ok(price), Ok(qty), Ok(time)) = (d.bkPx.parse::<f64>(), d.sz.parse::<f64>(), d.ts.parse::<i64>()) {
+                if let (Ok(price), Ok(qty), Ok(time)) = (
+                    d.bkPx.parse::<f64>(),
+                    d.sz.parse::<f64>(),
+                    d.ts.parse::<i64>(),
+                ) {
                     // OKX side: "buy" = long liquidated (forced sell), "sell" = short liquidated (forced buy)
-                    let normalized_side = if d.side == "buy" { "SELL".to_string() } else { "BUY".to_string() };
-                    liqs.push(Liquidation { side: normalized_side, price, qty, time });
+                    let normalized_side = if d.side == "buy" {
+                        "SELL".to_string()
+                    } else {
+                        "BUY".to_string()
+                    };
+                    liqs.push(Liquidation {
+                        side: normalized_side,
+                        price,
+                        qty,
+                        time,
+                    });
                 }
             }
         }
@@ -468,7 +555,12 @@ pub struct HyperliquidFeed {
 
 impl HyperliquidFeed {
     pub fn new() -> Self {
-        Self { client: Client::builder().timeout(std::time::Duration::from_secs(5)).build().unwrap_or_default() }
+        Self {
+            client: Client::builder()
+                .timeout(std::time::Duration::from_secs(5))
+                .build()
+                .unwrap_or_default(),
+        }
     }
 
     fn coin(asset: CryptoAsset) -> &'static str {
@@ -481,21 +573,32 @@ impl HyperliquidFeed {
     /// Fetch L2 order book.
     pub async fn fetch_orderbook(&self, asset: CryptoAsset) -> Result<OrderBook> {
         let body = serde_json::json!({ "type": "l2Book", "coin": Self::coin(asset) });
-        let resp: serde_json::Value = self.client
+        let resp: serde_json::Value = self
+            .client
             .post(&format!("{HL_BASE}/info"))
             .json(&body)
-            .send().await.context("hl l2Book request failed")?
-            .json().await.context("hl l2Book parse failed")?;
+            .send()
+            .await
+            .context("hl l2Book request failed")?
+            .json()
+            .await
+            .context("hl l2Book parse failed")?;
 
         let levels = resp.get("levels").and_then(|l| l.as_array());
         let parse_side = |idx: usize| -> Vec<OrderBookLevel> {
-            levels.and_then(|l| l.get(idx)).and_then(|s| s.as_array())
-                .map(|arr| arr.iter().filter_map(|entry| {
-                    Some(OrderBookLevel {
-                        price: entry.get("px")?.as_str()?.parse().ok()?,
-                        qty: entry.get("sz")?.as_str()?.parse().ok()?,
-                    })
-                }).collect())
+            levels
+                .and_then(|l| l.get(idx))
+                .and_then(|s| s.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|entry| {
+                            Some(OrderBookLevel {
+                                price: entry.get("px")?.as_str()?.parse().ok()?,
+                                qty: entry.get("sz")?.as_str()?.parse().ok()?,
+                            })
+                        })
+                        .collect()
+                })
                 .unwrap_or_default()
         };
 
@@ -509,28 +612,47 @@ impl HyperliquidFeed {
     /// Fetch funding rate and open interest from metaAndAssetCtxs.
     pub async fn fetch_meta(&self, asset: CryptoAsset) -> Result<(f64, f64)> {
         let body = serde_json::json!({ "type": "metaAndAssetCtxs" });
-        let resp: serde_json::Value = self.client
+        let resp: serde_json::Value = self
+            .client
             .post(&format!("{HL_BASE}/info"))
             .json(&body)
-            .send().await.context("hl meta request failed")?
-            .json().await.context("hl meta parse failed")?;
+            .send()
+            .await
+            .context("hl meta request failed")?
+            .json()
+            .await
+            .context("hl meta parse failed")?;
 
         // Response is [meta, [assetCtx, ...]] — find coin by index matching meta.universe
         let coin = Self::coin(asset);
         let meta = resp.as_array().and_then(|a| a.first());
-        let ctxs = resp.as_array().and_then(|a| a.get(1)).and_then(|a| a.as_array());
+        let ctxs = resp
+            .as_array()
+            .and_then(|a| a.get(1))
+            .and_then(|a| a.as_array());
 
         let idx = meta
-            .and_then(|m| m.get("universe")).and_then(|u| u.as_array())
-            .and_then(|universe| universe.iter().position(|item|
-                item.get("name").and_then(|n| n.as_str()) == Some(coin)
-            ));
+            .and_then(|m| m.get("universe"))
+            .and_then(|u| u.as_array())
+            .and_then(|universe| {
+                universe
+                    .iter()
+                    .position(|item| item.get("name").and_then(|n| n.as_str()) == Some(coin))
+            });
 
         let (mut funding, mut oi) = (0.0, 0.0);
         if let (Some(i), Some(ctxs)) = (idx, ctxs) {
             if let Some(ctx) = ctxs.get(i) {
-                funding = ctx.get("funding").and_then(|f| f.as_str()).and_then(|s| s.parse().ok()).unwrap_or(0.0);
-                oi = ctx.get("openInterest").and_then(|o| o.as_str()).and_then(|s| s.parse().ok()).unwrap_or(0.0);
+                funding = ctx
+                    .get("funding")
+                    .and_then(|f| f.as_str())
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(0.0);
+                oi = ctx
+                    .get("openInterest")
+                    .and_then(|o| o.as_str())
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(0.0);
             }
         }
 
@@ -549,7 +671,12 @@ pub struct BybitFeed {
 
 impl BybitFeed {
     pub fn new() -> Self {
-        Self { client: Client::builder().timeout(std::time::Duration::from_secs(5)).build().unwrap_or_default() }
+        Self {
+            client: Client::builder()
+                .timeout(std::time::Duration::from_secs(5))
+                .build()
+                .unwrap_or_default(),
+        }
     }
 
     fn symbol(asset: CryptoAsset) -> &'static str {
@@ -562,22 +689,38 @@ impl BybitFeed {
     /// Fetch order book (spot, up to 200 levels).
     pub async fn fetch_orderbook(&self, asset: CryptoAsset) -> Result<OrderBook> {
         let symbol = Self::symbol(asset);
-        let url = format!("{BYBIT_BASE}/v5/market/orderbook?category=spot&symbol={symbol}&limit=50");
+        let url =
+            format!("{BYBIT_BASE}/v5/market/orderbook?category=spot&symbol={symbol}&limit=50");
 
         #[derive(serde::Deserialize)]
-        struct Resp { result: BookResult }
+        struct Resp {
+            result: BookResult,
+        }
         #[derive(serde::Deserialize)]
-        struct BookResult { b: Vec<Vec<String>>, a: Vec<Vec<String>> }
+        struct BookResult {
+            b: Vec<Vec<String>>,
+            a: Vec<Vec<String>>,
+        }
 
-        let resp: Resp = self.client.get(&url).send().await
+        let resp: Resp = self
+            .client
+            .get(&url)
+            .send()
+            .await
             .context("bybit orderbook request failed")?
-            .json().await
+            .json()
+            .await
             .context("bybit orderbook parse failed")?;
 
         let parse = |raw: Vec<Vec<String>>| -> Vec<OrderBookLevel> {
-            raw.into_iter().filter_map(|l| {
-                Some(OrderBookLevel { price: l.first()?.parse().ok()?, qty: l.get(1)?.parse().ok()? })
-            }).collect()
+            raw.into_iter()
+                .filter_map(|l| {
+                    Some(OrderBookLevel {
+                        price: l.first()?.parse().ok()?,
+                        qty: l.get(1)?.parse().ok()?,
+                    })
+                })
+                .collect()
         };
 
         Ok(OrderBook {
@@ -590,55 +733,90 @@ impl BybitFeed {
     /// Fetch recent trades (spot, up to 1000).
     pub async fn fetch_trades(&self, asset: CryptoAsset) -> Result<Vec<Trade>> {
         let symbol = Self::symbol(asset);
-        let url = format!("{BYBIT_BASE}/v5/market/recent-trade?category=spot&symbol={symbol}&limit=500");
+        let url =
+            format!("{BYBIT_BASE}/v5/market/recent-trade?category=spot&symbol={symbol}&limit=500");
 
         #[derive(serde::Deserialize)]
-        struct Resp { result: TradeResult }
+        struct Resp {
+            result: TradeResult,
+        }
         #[derive(serde::Deserialize)]
-        struct TradeResult { list: Vec<TradeData> }
+        struct TradeResult {
+            list: Vec<TradeData>,
+        }
         #[derive(serde::Deserialize)]
         struct TradeData {
-            #[serde(rename = "p")] price: String,
-            #[serde(rename = "v")] qty: String,
-            #[serde(rename = "S")] side: String,
-            #[serde(rename = "T")] time: i64,
+            #[serde(rename = "p")]
+            price: String,
+            #[serde(rename = "v")]
+            qty: String,
+            #[serde(rename = "S")]
+            side: String,
+            #[serde(rename = "T")]
+            time: i64,
         }
 
-        let resp: Resp = self.client.get(&url).send().await
+        let resp: Resp = self
+            .client
+            .get(&url)
+            .send()
+            .await
             .context("bybit trades request failed")?
-            .json().await
+            .json()
+            .await
             .context("bybit trades parse failed")?;
 
-        let trades = resp.result.list.into_iter().filter_map(|t| {
-            Some(Trade {
-                price: t.price.parse().ok()?,
-                qty: t.qty.parse().ok()?,
-                is_buyer_maker: t.side == "Sell", // Bybit: "Sell" = taker sold
-                time: t.time,
+        let trades = resp
+            .result
+            .list
+            .into_iter()
+            .filter_map(|t| {
+                Some(Trade {
+                    price: t.price.parse().ok()?,
+                    qty: t.qty.parse().ok()?,
+                    is_buyer_maker: t.side == "Sell", // Bybit: "Sell" = taker sold
+                    time: t.time,
+                })
             })
-        }).collect();
+            .collect();
         Ok(trades)
     }
 
     /// Fetch latest funding rate (linear perpetual).
     pub async fn fetch_funding_rate(&self, asset: CryptoAsset) -> Result<f64> {
         let symbol = Self::symbol(asset);
-        let url = format!("{BYBIT_BASE}/v5/market/funding/history?category=linear&symbol={symbol}&limit=1");
+        let url = format!(
+            "{BYBIT_BASE}/v5/market/funding/history?category=linear&symbol={symbol}&limit=1"
+        );
 
         #[derive(serde::Deserialize)]
-        struct Resp { result: FrResult }
+        struct Resp {
+            result: FrResult,
+        }
         #[derive(serde::Deserialize)]
-        struct FrResult { list: Vec<FrData> }
+        struct FrResult {
+            list: Vec<FrData>,
+        }
         #[derive(serde::Deserialize)]
         #[serde(rename_all = "camelCase")]
-        struct FrData { funding_rate: String }
+        struct FrData {
+            funding_rate: String,
+        }
 
-        let resp: Resp = self.client.get(&url).send().await
+        let resp: Resp = self
+            .client
+            .get(&url)
+            .send()
+            .await
             .context("bybit funding request failed")?
-            .json().await
+            .json()
+            .await
             .context("bybit funding parse failed")?;
 
-        let rate = resp.result.list.first()
+        let rate = resp
+            .result
+            .list
+            .first()
             .and_then(|d| d.funding_rate.parse::<f64>().ok())
             .unwrap_or(0.0);
         Ok(rate)
@@ -647,22 +825,38 @@ impl BybitFeed {
     /// Fetch open interest (linear perpetual).
     pub async fn fetch_open_interest(&self, asset: CryptoAsset) -> Result<f64> {
         let symbol = Self::symbol(asset);
-        let url = format!("{BYBIT_BASE}/v5/market/open-interest?category=linear&symbol={symbol}&intervalTime=5min&limit=1");
+        let url = format!(
+            "{BYBIT_BASE}/v5/market/open-interest?category=linear&symbol={symbol}&intervalTime=5min&limit=1"
+        );
 
         #[derive(serde::Deserialize)]
-        struct Resp { result: OiResult }
+        struct Resp {
+            result: OiResult,
+        }
         #[derive(serde::Deserialize)]
-        struct OiResult { list: Vec<OiData> }
+        struct OiResult {
+            list: Vec<OiData>,
+        }
         #[derive(serde::Deserialize)]
         #[serde(rename_all = "camelCase")]
-        struct OiData { open_interest: String }
+        struct OiData {
+            open_interest: String,
+        }
 
-        let resp: Resp = self.client.get(&url).send().await
+        let resp: Resp = self
+            .client
+            .get(&url)
+            .send()
+            .await
             .context("bybit OI request failed")?
-            .json().await
+            .json()
+            .await
             .context("bybit OI parse failed")?;
 
-        let oi = resp.result.list.first()
+        let oi = resp
+            .result
+            .list
+            .first()
             .and_then(|d| d.open_interest.parse::<f64>().ok())
             .unwrap_or(0.0);
         Ok(oi)
@@ -693,15 +887,29 @@ pub async fn fetch_aggregated_spot(
     let mut agg = AggregatedSpot::default();
 
     // Collect successful order books
-    if let Ok(ob) = b_ob { agg.orderbooks.push(("binance".into(), ob)); }
-    if let Ok(ob) = o_ob { agg.orderbooks.push(("okx".into(), ob)); }
-    if let Ok(ob) = h_ob { agg.orderbooks.push(("hyperliquid".into(), ob)); }
-    if let Ok(ob) = by_ob { agg.orderbooks.push(("bybit".into(), ob)); }
+    if let Ok(ob) = b_ob {
+        agg.orderbooks.push(("binance".into(), ob));
+    }
+    if let Ok(ob) = o_ob {
+        agg.orderbooks.push(("okx".into(), ob));
+    }
+    if let Ok(ob) = h_ob {
+        agg.orderbooks.push(("hyperliquid".into(), ob));
+    }
+    if let Ok(ob) = by_ob {
+        agg.orderbooks.push(("bybit".into(), ob));
+    }
 
     // Collect successful trades
-    if let Ok(tr) = b_tr { agg.trades.push(("binance".into(), tr)); }
-    if let Ok(tr) = o_tr { agg.trades.push(("okx".into(), tr)); }
-    if let Ok(tr) = by_tr { agg.trades.push(("bybit".into(), tr)); }
+    if let Ok(tr) = b_tr {
+        agg.trades.push(("binance".into(), tr));
+    }
+    if let Ok(tr) = o_tr {
+        agg.trades.push(("okx".into(), tr));
+    }
+    if let Ok(tr) = by_tr {
+        agg.trades.push(("bybit".into(), tr));
+    }
 
     agg.exchange_count = agg.orderbooks.len() as u32;
 
@@ -712,18 +920,30 @@ pub async fn fetch_aggregated_spot(
         total_ask += ob.asks.iter().map(|l| l.qty).sum::<f64>();
     }
     let total_ob = total_bid + total_ask;
-    agg.merged_ob_imbalance = if total_ob > 0.0 { (total_bid - total_ask) / total_ob } else { 0.0 };
+    agg.merged_ob_imbalance = if total_ob > 0.0 {
+        (total_bid - total_ask) / total_ob
+    } else {
+        0.0
+    };
 
     // Compute merged trade flow: aggregate buy/sell volume across all exchanges
     let (mut total_buy, mut total_sell) = (0.0f64, 0.0f64);
     for (_, trades) in &agg.trades {
         for t in trades {
             let notional = t.price * t.qty;
-            if t.is_buyer_maker { total_sell += notional; } else { total_buy += notional; }
+            if t.is_buyer_maker {
+                total_sell += notional;
+            } else {
+                total_buy += notional;
+            }
         }
     }
     let total_flow = total_buy + total_sell;
-    agg.merged_trade_flow = if total_flow > 0.0 { (total_buy - total_sell) / total_flow } else { 0.0 };
+    agg.merged_trade_flow = if total_flow > 0.0 {
+        (total_buy - total_sell) / total_flow
+    } else {
+        0.0
+    };
 
     agg
 }
@@ -749,7 +969,10 @@ pub async fn fetch_aggregated_futures(
 
     let binance_ok = b_all.is_ok();
     let binance = b_all.unwrap_or(FuturesData {
-        funding_rate: 0.0, mark_price: 0.0, open_interest_usd: 0.0, liquidations: vec![],
+        funding_rate: 0.0,
+        mark_price: 0.0,
+        open_interest_usd: 0.0,
+        liquidations: vec![],
     });
 
     // Collect funding rates for averaging — only include exchanges that succeeded

@@ -5,8 +5,8 @@ use polymarket_client_sdk::clob::types::request::MidpointRequest;
 use polymarket_client_sdk::types::U256;
 use rust_decimal::prelude::ToPrimitive;
 
-use super::store;
 use super::OddsAlert;
+use super::store;
 
 /// Scan all watched markets and return alerts for those exceeding threshold.
 pub async fn scan_odds() -> Result<Vec<OddsAlert>> {
@@ -46,17 +46,12 @@ pub async fn scan_odds() -> Result<Vec<OddsAlert>> {
 
                 let change_from_baseline =
                     ((mid - watch.baseline_price) / watch.baseline_price) * 100.0;
-                let change_from_last =
-                    ((mid - watch.last_price) / watch.last_price) * 100.0;
+                let change_from_last = ((mid - watch.last_price) / watch.last_price) * 100.0;
 
                 // Alert if change from last scan exceeds threshold
                 if change_from_last.abs() >= watch.threshold_pct {
                     let alert = OddsAlert {
-                        id: format!(
-                            "odds_{}_{:.0}",
-                            now.timestamp(),
-                            mid * 10000.0
-                        ),
+                        id: format!("odds_{}_{:.0}", now.timestamp(), mid * 10000.0),
                         timestamp: now,
                         token_id: watch.token_id.clone(),
                         label: watch.label.clone(),

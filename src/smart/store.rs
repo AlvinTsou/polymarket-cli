@@ -7,7 +7,8 @@ use anyhow::{Context, Result};
 fn atomic_write(path: &Path, data: &[u8]) -> Result<()> {
     let tmp = path.with_extension("tmp");
     fs::write(&tmp, data).with_context(|| format!("failed to write {}", tmp.display()))?;
-    fs::rename(&tmp, path).with_context(|| format!("failed to rename {} -> {}", tmp.display(), path.display()))?;
+    fs::rename(&tmp, path)
+        .with_context(|| format!("failed to rename {} -> {}", tmp.display(), path.display()))?;
     Ok(())
 }
 
@@ -30,9 +31,7 @@ fn snapshots_dir() -> Result<PathBuf> {
 }
 
 fn sanitize_address(addr: &str) -> String {
-    addr.to_lowercase()
-        .replace("0x", "")
-        .replace("0X", "")
+    addr.to_lowercase().replace("0x", "").replace("0X", "")
 }
 
 // ── Watched wallets ──────────────────────────────────────────────
@@ -91,8 +90,7 @@ pub fn load_snapshot(address: &str) -> Result<Option<WalletSnapshot>> {
 }
 
 pub fn save_snapshot(snapshot: &WalletSnapshot) -> Result<()> {
-    let file =
-        snapshots_dir()?.join(format!("{}.json", sanitize_address(&snapshot.address)));
+    let file = snapshots_dir()?.join(format!("{}.json", sanitize_address(&snapshot.address)));
     let json = serde_json::to_string_pretty(snapshot)?;
     fs::write(&file, json)?;
     Ok(())
@@ -218,13 +216,14 @@ pub fn close_follow_position(
     let mut closed = false;
 
     for r in records.iter_mut() {
-        if r.condition_id == condition_id
-            && r.outcome == outcome
-            && r.side == "BUY"
-            && r.is_open()
+        if r.condition_id == condition_id && r.outcome == outcome && r.side == "BUY" && r.is_open()
         {
             let entry = r.effective_entry();
-            let shares = if entry > 0.0 { r.amount_usdc / entry } else { 0.0 };
+            let shares = if entry > 0.0 {
+                r.amount_usdc / entry
+            } else {
+                0.0
+            };
             let pnl = shares * exit_price - r.amount_usdc;
 
             r.status = Some(super::TradeStatus::Closed);

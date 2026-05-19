@@ -13,8 +13,8 @@ use crate::output::smart::{
 };
 use crate::smart::tracker::PositionChange;
 use crate::smart::{
-    AggregatedSignal, FollowRecord, OddsWatch, PriceSnapshot, Signal, SignalConfidence,
-    SmartScore, TelegramConfig, WatchedWallet, odds, scorer, signals, store, tracker,
+    AggregatedSignal, FollowRecord, OddsWatch, PriceSnapshot, Signal, SignalConfidence, SmartScore,
+    TelegramConfig, WatchedWallet, odds, scorer, signals, store, tracker,
 };
 
 #[derive(Args)]
@@ -460,16 +460,55 @@ pub async fn execute(
         }
 
         SmartCommand::WalletPnl { address } => cmd_wallet_pnl(client, &address, &output).await,
-        SmartCommand::Analyze { address, depth } => cmd_analyze(client, &address, depth, &output).await,
+        SmartCommand::Analyze { address, depth } => {
+            cmd_analyze(client, &address, depth, &output).await
+        }
 
         SmartCommand::DiscoverMarkets { tag, search, limit } => {
-            cmd_discover_markets(gamma_client, tag.as_deref(), search.as_deref(), limit, &output).await
+            cmd_discover_markets(
+                gamma_client,
+                tag.as_deref(),
+                search.as_deref(),
+                limit,
+                &output,
+            )
+            .await
         }
-        SmartCommand::DiscoverWhales { tag, market, min_position, limit, auto_watch } => {
-            cmd_discover_whales(client, gamma_client, tag.as_deref(), market.as_deref(), min_position, limit, auto_watch, &output).await
+        SmartCommand::DiscoverWhales {
+            tag,
+            market,
+            min_position,
+            limit,
+            auto_watch,
+        } => {
+            cmd_discover_whales(
+                client,
+                gamma_client,
+                tag.as_deref(),
+                market.as_deref(),
+                min_position,
+                limit,
+                auto_watch,
+                &output,
+            )
+            .await
         }
-        SmartCommand::DiscoverAuto { tags, min_position, limit, auto_watch } => {
-            cmd_discover_auto(client, gamma_client, &tags, min_position, limit, auto_watch, &output).await
+        SmartCommand::DiscoverAuto {
+            tags,
+            min_position,
+            limit,
+            auto_watch,
+        } => {
+            cmd_discover_auto(
+                client,
+                gamma_client,
+                &tags,
+                min_position,
+                limit,
+                auto_watch,
+                &output,
+            )
+            .await
         }
 
         SmartCommand::Watch { address, tag } => cmd_watch(&address, tag, &output),
@@ -521,7 +560,13 @@ pub async fn execute(
             market,
             period,
             status,
-        } => cmd_roi(wallet.as_deref(), market.as_deref(), &period, &status, &output),
+        } => cmd_roi(
+            wallet.as_deref(),
+            market.as_deref(),
+            &period,
+            &status,
+            &output,
+        ),
 
         SmartCommand::Backtest {
             amount,
@@ -556,10 +601,21 @@ pub async fn execute(
             load,
         } => {
             cmd_monitor(
-                client, &interval, &min_confidence, min_wallets,
-                market_include.as_deref(), market_exclude.as_deref(),
-                odds_threshold, paper_trade, amount, max_per_day, max_per_group,
-                notify, save, load, &output,
+                client,
+                &interval,
+                &min_confidence,
+                min_wallets,
+                market_include.as_deref(),
+                market_exclude.as_deref(),
+                odds_threshold,
+                paper_trade,
+                amount,
+                max_per_day,
+                max_per_group,
+                notify,
+                save,
+                load,
+                &output,
             )
             .await
         }
@@ -641,11 +697,15 @@ async fn cmd_auto_renew(
     let periods = [
         ("day", polymarket_client_sdk::data::types::TimePeriod::Day),
         ("week", polymarket_client_sdk::data::types::TimePeriod::Week),
-        ("month", polymarket_client_sdk::data::types::TimePeriod::Month),
+        (
+            "month",
+            polymarket_client_sdk::data::types::TimePeriod::Month,
+        ),
     ];
 
     // Collect wallets across all periods
-    let mut seen: std::collections::HashMap<String, (f64, Vec<String>)> = std::collections::HashMap::new();
+    let mut seen: std::collections::HashMap<String, (f64, Vec<String>)> =
+        std::collections::HashMap::new();
 
     for (period_name, period_val) in &periods {
         let request = TraderLeaderboardRequest::builder()
@@ -664,9 +724,12 @@ async fn cmd_auto_renew(
                         e.pnl.to_f64().unwrap_or(0.0),
                         e.vol.to_f64().unwrap_or(0.0),
                         e.rank as u64,
-                    ).score;
+                    )
+                    .score;
                     let entry = seen.entry(addr).or_insert((0.0, Vec::new()));
-                    if score > entry.0 { entry.0 = score; }
+                    if score > entry.0 {
+                        entry.0 = score;
+                    }
                     if !entry.1.contains(&period_name.to_string()) {
                         entry.1.push(period_name.to_string());
                     }
@@ -683,7 +746,9 @@ async fn cmd_auto_renew(
     let now = Utc::now();
 
     for (addr, (score, periods_found)) in &seen {
-        if *score < threshold { continue; }
+        if *score < threshold {
+            continue;
+        }
 
         let existing = store::load_wallets()?;
         let already = existing.iter().any(|w| w.address.to_lowercase() == *addr);
@@ -707,7 +772,9 @@ async fn cmd_auto_renew(
                 stale: Some(false),
                 disabled: None,
             };
-            if store::add_wallet(wallet)? { added += 1; }
+            if store::add_wallet(wallet)? {
+                added += 1;
+            }
         }
     }
 
@@ -716,8 +783,12 @@ async fn cmd_auto_renew(
     let all_wallets = store::load_wallets()?;
     let mut stale_count = 0u32;
     for w in &all_wallets {
-        if w.tag.as_deref() == Some("leaderboard") && !seen_addrs.contains(&w.address.to_lowercase()) {
-            store::update_wallet(&w.address, |w| { w.stale = Some(true); })?;
+        if w.tag.as_deref() == Some("leaderboard")
+            && !seen_addrs.contains(&w.address.to_lowercase())
+        {
+            store::update_wallet(&w.address, |w| {
+                w.stale = Some(true);
+            })?;
             stale_count += 1;
         }
     }
@@ -742,11 +813,7 @@ async fn cmd_auto_renew(
 
 // ── Wallet PnL ──────────────────────────────────────────────────
 
-async fn cmd_wallet_pnl(
-    client: &data::Client,
-    address: &str,
-    output: &OutputFormat,
-) -> Result<()> {
+async fn cmd_wallet_pnl(client: &data::Client, address: &str, output: &OutputFormat) -> Result<()> {
     use polymarket_client_sdk::data::types::request::{ClosedPositionsRequest, PositionsRequest};
 
     let addr = parse_address(address)?;
@@ -756,7 +823,10 @@ async fn cmd_wallet_pnl(
     let open_positions = client.positions(&open_req).await?;
 
     // Fetch closed positions
-    let closed_req = ClosedPositionsRequest::builder().user(addr).limit(100)?.build();
+    let closed_req = ClosedPositionsRequest::builder()
+        .user(addr)
+        .limit(100)?
+        .build();
     let closed_positions = client.closed_positions(&closed_req).await?;
 
     // Compute open PnL
@@ -771,28 +841,38 @@ async fn cmd_wallet_pnl(
     for p in &closed_positions {
         let rpnl = p.realized_pnl.to_f64().unwrap_or(0.0);
         realized_pnl += rpnl;
-        if rpnl > 0.0 { closed_wins += 1; }
+        if rpnl > 0.0 {
+            closed_wins += 1;
+        }
     }
 
     let total_pnl = open_pnl + realized_pnl;
     let win_rate = if !closed_positions.is_empty() {
         closed_wins as f64 / closed_positions.len() as f64 * 100.0
-    } else { 0.0 };
+    } else {
+        0.0
+    };
 
     // Check if watched
     let wallets = store::load_wallets()?;
-    let watched = wallets.iter().find(|w| w.address.to_lowercase() == address.to_lowercase());
+    let watched = wallets
+        .iter()
+        .find(|w| w.address.to_lowercase() == address.to_lowercase());
     let tag = watched.and_then(|w| w.tag.as_deref()).unwrap_or("—");
     let score = watched.and_then(|w| w.score).unwrap_or(0.0);
 
     match output {
         OutputFormat::Table => {
             let short_addr = if address.len() > 14 {
-                format!("{}...{}", &address[..8], &address[address.len()-6..])
-            } else { address.to_string() };
+                format!("{}...{}", &address[..8], &address[address.len() - 6..])
+            } else {
+                address.to_string()
+            };
 
             println!("=== Wallet PnL: {} ({}) ===", short_addr, tag);
-            if score > 0.0 { println!("  Score: {score:.1}"); }
+            if score > 0.0 {
+                println!("  Score: {score:.1}");
+            }
             println!();
 
             // Open positions table
@@ -813,17 +893,20 @@ async fn cmd_wallet_pnl(
                     #[tabled(rename = "PnL")]
                     pnl: String,
                 }
-                let rows: Vec<ORow> = open_positions.iter().map(|p| {
-                    let pnl = p.cash_pnl.to_f64().unwrap_or(0.0);
-                    ORow {
-                        market: crate::output::truncate(&p.title, 30),
-                        outcome: p.outcome.clone(),
-                        size: format!("{}", p.size),
-                        entry: format!("{:.3}", p.avg_price),
-                        now: format!("{:.3}", p.cur_price),
-                        pnl: format!("{pnl:+.2}"),
-                    }
-                }).collect();
+                let rows: Vec<ORow> = open_positions
+                    .iter()
+                    .map(|p| {
+                        let pnl = p.cash_pnl.to_f64().unwrap_or(0.0);
+                        ORow {
+                            market: crate::output::truncate(&p.title, 30),
+                            outcome: p.outcome.clone(),
+                            size: format!("{}", p.size),
+                            entry: format!("{:.3}", p.avg_price),
+                            now: format!("{:.3}", p.cur_price),
+                            pnl: format!("{pnl:+.2}"),
+                        }
+                    })
+                    .collect();
                 println!("Open Positions ({}):", open_positions.len());
                 println!("{}", Table::new(rows).with(Style::rounded()));
             }
@@ -842,25 +925,46 @@ async fn cmd_wallet_pnl(
                     #[tabled(rename = "Realized PnL")]
                     pnl: String,
                 }
-                let rows: Vec<CRow> = closed_positions.iter().take(20).map(|p| {
-                    let pnl = p.realized_pnl.to_f64().unwrap_or(0.0);
-                    CRow {
-                        market: crate::output::truncate(&p.title, 30),
-                        outcome: p.outcome.clone(),
-                        avg_price: format!("{:.3}", p.avg_price),
-                        pnl: format!("{pnl:+.2}"),
-                    }
-                }).collect();
-                println!("\nClosed Positions (showing {}/{}):", rows.len(), closed_positions.len());
+                let rows: Vec<CRow> = closed_positions
+                    .iter()
+                    .take(20)
+                    .map(|p| {
+                        let pnl = p.realized_pnl.to_f64().unwrap_or(0.0);
+                        CRow {
+                            market: crate::output::truncate(&p.title, 30),
+                            outcome: p.outcome.clone(),
+                            avg_price: format!("{:.3}", p.avg_price),
+                            pnl: format!("{pnl:+.2}"),
+                        }
+                    })
+                    .collect();
+                println!(
+                    "\nClosed Positions (showing {}/{}):",
+                    rows.len(),
+                    closed_positions.len()
+                );
                 println!("{}", Table::new(rows).with(Style::rounded()));
             }
 
             println!();
             let pc = |v: f64| if v >= 0.0 { "+" } else { "" };
-            println!("  Open PnL:     {}{:.2} ({} positions)", pc(open_pnl), open_pnl, open_positions.len());
-            println!("  Realized PnL: {}{:.2} ({} closed)", pc(realized_pnl), realized_pnl, closed_positions.len());
+            println!(
+                "  Open PnL:     {}{:.2} ({} positions)",
+                pc(open_pnl),
+                open_pnl,
+                open_positions.len()
+            );
+            println!(
+                "  Realized PnL: {}{:.2} ({} closed)",
+                pc(realized_pnl),
+                realized_pnl,
+                closed_positions.len()
+            );
             println!("  Total PnL:    {}{:.2}", pc(total_pnl), total_pnl);
-            println!("  Win Rate:     {win_rate:.0}% ({closed_wins}/{})", closed_positions.len());
+            println!(
+                "  Win Rate:     {win_rate:.0}% ({closed_wins}/{})",
+                closed_positions.len()
+            );
         }
         OutputFormat::Json => {
             let data = serde_json::json!({
@@ -891,12 +995,70 @@ async fn cmd_wallet_pnl(
 // ── Analyze ─────────────────────────────────────────────────────
 
 const CATEGORIES: &[(&str, &[&str])] = &[
-    ("Politics", &["election", "president", "congress", "vote", "trump", "biden", "governor", "senate", "party"]),
-    ("Crypto", &["bitcoin", "ethereum", "btc", "eth", "crypto", "defi", "solana", "token"]),
-    ("AI/Tech", &["ai", "artificial", "openai", "google", "apple", "tech", "gpt", "model"]),
-    ("Sports", &["nba", "nfl", "soccer", "championship", "world cup", "game", "match", "league"]),
-    ("Economy", &["gdp", "inflation", "fed", "interest rate", "recession", "tariff", "unemployment"]),
-    ("Geopolitics", &["war", "russia", "china", "ukraine", "nato", "sanction", "missile"]),
+    (
+        "Politics",
+        &[
+            "election",
+            "president",
+            "congress",
+            "vote",
+            "trump",
+            "biden",
+            "governor",
+            "senate",
+            "party",
+        ],
+    ),
+    (
+        "Crypto",
+        &[
+            "bitcoin", "ethereum", "btc", "eth", "crypto", "defi", "solana", "token",
+        ],
+    ),
+    (
+        "AI/Tech",
+        &[
+            "ai",
+            "artificial",
+            "openai",
+            "google",
+            "apple",
+            "tech",
+            "gpt",
+            "model",
+        ],
+    ),
+    (
+        "Sports",
+        &[
+            "nba",
+            "nfl",
+            "soccer",
+            "championship",
+            "world cup",
+            "game",
+            "match",
+            "league",
+        ],
+    ),
+    (
+        "Economy",
+        &[
+            "gdp",
+            "inflation",
+            "fed",
+            "interest rate",
+            "recession",
+            "tariff",
+            "unemployment",
+        ],
+    ),
+    (
+        "Geopolitics",
+        &[
+            "war", "russia", "china", "ukraine", "nato", "sanction", "missile",
+        ],
+    ),
 ];
 
 fn categorize_market(title: &str) -> &'static str {
@@ -923,11 +1085,15 @@ async fn cmd_analyze(
     let open_req = PositionsRequest::builder().user(addr).limit(depth)?.build();
     let open_positions = client.positions(&open_req).await?;
 
-    let closed_req = ClosedPositionsRequest::builder().user(addr).limit(depth)?.build();
+    let closed_req = ClosedPositionsRequest::builder()
+        .user(addr)
+        .limit(depth)?
+        .build();
     let closed_positions = client.closed_positions(&closed_req).await?;
 
     // Category distribution
-    let mut cat_stats: std::collections::HashMap<&str, (u32, f64)> = std::collections::HashMap::new();
+    let mut cat_stats: std::collections::HashMap<&str, (u32, f64)> =
+        std::collections::HashMap::new();
     let total_positions = open_positions.len() + closed_positions.len();
 
     for p in &open_positions {
@@ -943,15 +1109,24 @@ async fn cmd_analyze(
         e.1 += p.realized_pnl.to_f64().unwrap_or(0.0);
     }
 
-    let mut categories: Vec<crate::smart::CategoryStat> = cat_stats.iter().map(|(name, (count, pnl))| {
-        crate::smart::CategoryStat {
+    let mut categories: Vec<crate::smart::CategoryStat> = cat_stats
+        .iter()
+        .map(|(name, (count, pnl))| crate::smart::CategoryStat {
             name: name.to_string(),
             position_count: *count,
             total_pnl: *pnl,
-            pct: if total_positions > 0 { *count as f64 / total_positions as f64 * 100.0 } else { 0.0 },
-        }
-    }).collect();
-    categories.sort_by(|a, b| b.pct.partial_cmp(&a.pct).unwrap_or(std::cmp::Ordering::Equal));
+            pct: if total_positions > 0 {
+                *count as f64 / total_positions as f64 * 100.0
+            } else {
+                0.0
+            },
+        })
+        .collect();
+    categories.sort_by(|a, b| {
+        b.pct
+            .partial_cmp(&a.pct)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     // Trading style metrics
     let mut total_size = 0.0f64;
@@ -967,27 +1142,53 @@ async fn cmd_analyze(
         total_size += size;
         total_entry_price += entry;
         position_count += 1;
-        if p.outcome.to_lowercase().contains("yes") { yes_count += 1; }
+        if p.outcome.to_lowercase().contains("yes") {
+            yes_count += 1;
+        }
         sizes.push(size);
     }
     sizes.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
-    for s in sizes.iter().take(3) { top_3_size += s; }
+    for s in sizes.iter().take(3) {
+        top_3_size += s;
+    }
 
-    let avg_size = if position_count > 0 { total_size / position_count as f64 } else { 0.0 };
-    let avg_entry = if position_count > 0 { total_entry_price / position_count as f64 } else { 0.0 };
-    let yes_pct = if position_count > 0 { yes_count as f64 / position_count as f64 * 100.0 } else { 0.0 };
-    let concentration = if total_size > 0.0 { top_3_size / total_size * 100.0 } else { 0.0 };
+    let avg_size = if position_count > 0 {
+        total_size / position_count as f64
+    } else {
+        0.0
+    };
+    let avg_entry = if position_count > 0 {
+        total_entry_price / position_count as f64
+    } else {
+        0.0
+    };
+    let yes_pct = if position_count > 0 {
+        yes_count as f64 / position_count as f64 * 100.0
+    } else {
+        0.0
+    };
+    let concentration = if total_size > 0.0 {
+        top_3_size / total_size * 100.0
+    } else {
+        0.0
+    };
 
     // Contrarian score: how many positions are on outcomes priced < 0.40
-    let contrarian_count = open_positions.iter().filter(|p| p.cur_price.to_f64().unwrap_or(0.5) < 0.40).count();
+    let contrarian_count = open_positions
+        .iter()
+        .filter(|p| p.cur_price.to_f64().unwrap_or(0.5) < 0.40)
+        .count();
     let contrarian_score = if !open_positions.is_empty() {
         (contrarian_count as f64 / open_positions.len() as f64 * 10.0).round() as u32
-    } else { 0 };
+    } else {
+        0
+    };
 
     // Recent signals for this wallet
     let all_signals = store::load_signals(200)?;
     let addr_lower = address.to_lowercase();
-    let recent_signals: Vec<&Signal> = all_signals.iter()
+    let recent_signals: Vec<&Signal> = all_signals
+        .iter()
         .filter(|s| s.wallet.to_lowercase() == addr_lower)
         .take(10)
         .collect();
@@ -995,8 +1196,10 @@ async fn cmd_analyze(
     match output {
         OutputFormat::Table => {
             let short_addr = if address.len() > 14 {
-                format!("{}...{}", &address[..8], &address[address.len()-6..])
-            } else { address.to_string() };
+                format!("{}...{}", &address[..8], &address[address.len() - 6..])
+            } else {
+                address.to_string()
+            };
 
             println!("=== Trade Analysis: {} ===\n", short_addr);
 
@@ -1005,28 +1208,48 @@ async fn cmd_analyze(
             for c in &categories {
                 let pc = if c.total_pnl >= 0.0 { "+" } else { "" };
                 let bar = "#".repeat((c.pct / 5.0).round() as usize);
-                println!("  {:<12} {:>4.0}%  ({} pos, {}{:.2} PnL)  {}", c.name, c.pct, c.position_count, pc, c.total_pnl, bar);
+                println!(
+                    "  {:<12} {:>4.0}%  ({} pos, {}{:.2} PnL)  {}",
+                    c.name, c.pct, c.position_count, pc, c.total_pnl, bar
+                );
             }
 
             // Trading style
             println!("\nTrading Style:");
             println!("  Avg position size:  {avg_size:.1}");
-            println!("  Avg entry price:    {avg_entry:.3} {}", if avg_entry < 0.40 { "(buys low-probability)" } else if avg_entry > 0.60 { "(buys high-probability)" } else { "(balanced)" });
+            println!(
+                "  Avg entry price:    {avg_entry:.3} {}",
+                if avg_entry < 0.40 {
+                    "(buys low-probability)"
+                } else if avg_entry > 0.60 {
+                    "(buys high-probability)"
+                } else {
+                    "(balanced)"
+                }
+            );
             println!("  Direction bias:     {yes_pct:.0}% YES positions");
             println!("  Concentration:      top 3 = {concentration:.0}% of portfolio");
-            println!("  Contrarian score:   {contrarian_score}/10 ({contrarian_count}/{} positions priced < 0.40)", open_positions.len());
+            println!(
+                "  Contrarian score:   {contrarian_score}/10 ({contrarian_count}/{} positions priced < 0.40)",
+                open_positions.len()
+            );
 
             // Conviction label
-            let conviction = if avg_size > 100.0 && position_count < 10 { "High (large bets, few positions)" }
-                else if avg_size < 20.0 && position_count > 20 { "Low (small bets, many positions)" }
-                else { "Medium" };
+            let conviction = if avg_size > 100.0 && position_count < 10 {
+                "High (large bets, few positions)"
+            } else if avg_size < 20.0 && position_count > 20 {
+                "Low (small bets, many positions)"
+            } else {
+                "Medium"
+            };
             println!("  Conviction:         {conviction}");
 
             // Recent moves
             if !recent_signals.is_empty() {
                 println!("\nRecent Activity ({} signals):", recent_signals.len());
                 for s in &recent_signals {
-                    println!("  {} {:<8} {:<4} {} [{}] @ {}",
+                    println!(
+                        "  {} {:<8} {:<4} {} [{}] @ {}",
                         s.timestamp.format("%m-%d %H:%M"),
                         s.signal_type.to_string(),
                         s.confidence.to_string(),
@@ -1085,8 +1308,15 @@ async fn cmd_discover_markets(
                     let question = m.question.as_deref().unwrap_or("?");
                     let vol = m.volume_num.and_then(|v| v.to_f64());
                     let liq = m.liquidity_num.and_then(|v| v.to_f64());
-                    let prices = m.outcome_prices.as_ref()
-                        .map(|p| p.iter().map(|v| format!("{v:.2}")).collect::<Vec<_>>().join("/"))
+                    let prices = m
+                        .outcome_prices
+                        .as_ref()
+                        .map(|p| {
+                            p.iter()
+                                .map(|v| format!("{v:.2}"))
+                                .collect::<Vec<_>>()
+                                .join("/")
+                        })
                         .unwrap_or_default();
                     markets.push((question, vol, liq, prices));
                 }
@@ -1098,9 +1328,27 @@ async fn cmd_discover_markets(
             OutputFormat::Table => {
                 println!("--- Markets matching \"{}\" ({}) ---", query, markets.len());
                 for (q, vol, liq, prices) in &markets {
-                    let vol_str = vol.map(|v| crate::output::format_decimal(rust_decimal::Decimal::from_f64_retain(v).unwrap_or_default())).unwrap_or_else(|| "—".into());
-                    let liq_str = liq.map(|v| crate::output::format_decimal(rust_decimal::Decimal::from_f64_retain(v).unwrap_or_default())).unwrap_or_else(|| "—".into());
-                    println!("  ${:<8} liq ${:<8} {}  {}", vol_str, liq_str, prices, crate::output::truncate(q, 50));
+                    let vol_str = vol
+                        .map(|v| {
+                            crate::output::format_decimal(
+                                rust_decimal::Decimal::from_f64_retain(v).unwrap_or_default(),
+                            )
+                        })
+                        .unwrap_or_else(|| "—".into());
+                    let liq_str = liq
+                        .map(|v| {
+                            crate::output::format_decimal(
+                                rust_decimal::Decimal::from_f64_retain(v).unwrap_or_default(),
+                            )
+                        })
+                        .unwrap_or_else(|| "—".into());
+                    println!(
+                        "  ${:<8} liq ${:<8} {}  {}",
+                        vol_str,
+                        liq_str,
+                        prices,
+                        crate::output::truncate(q, 50)
+                    );
                 }
             }
             OutputFormat::Json => {
@@ -1126,21 +1374,39 @@ async fn cmd_discover_markets(
 
     match output {
         OutputFormat::Table => {
-            println!("--- Active Markets [{}] ({} events) ---\n", tag_slug, events.len());
+            println!(
+                "--- Active Markets [{}] ({} events) ---\n",
+                tag_slug,
+                events.len()
+            );
             for e in &events {
                 let title = e.title.as_deref().unwrap_or("?");
                 let vol = e.volume.and_then(|v| v.to_f64()).unwrap_or(0.0);
-                let vol_str = crate::output::format_decimal(rust_decimal::Decimal::from_f64_retain(vol).unwrap_or_default());
+                let vol_str = crate::output::format_decimal(
+                    rust_decimal::Decimal::from_f64_retain(vol).unwrap_or_default(),
+                );
                 println!("  ${:<8}  {}", vol_str, crate::output::truncate(title, 55));
 
                 if let Some(mkts) = &e.markets {
                     for m in mkts.iter().take(3) {
                         let q = m.question.as_deref().unwrap_or("?");
-                        let prices = m.outcome_prices.as_ref()
-                            .map(|p| p.iter().map(|v| format!("{v:.2}")).collect::<Vec<_>>().join("/"))
+                        let prices = m
+                            .outcome_prices
+                            .as_ref()
+                            .map(|p| {
+                                p.iter()
+                                    .map(|v| format!("{v:.2}"))
+                                    .collect::<Vec<_>>()
+                                    .join("/")
+                            })
                             .unwrap_or_default();
                         let cid = m.condition_id.map(|c| format!("{c}")).unwrap_or_default();
-                        println!("    {} [{}]  cid: {}...", crate::output::truncate(q, 40), prices, &cid[..18.min(cid.len())]);
+                        println!(
+                            "    {} [{}]  cid: {}...",
+                            crate::output::truncate(q, 40),
+                            prices,
+                            &cid[..18.min(cid.len())]
+                        );
                     }
                 }
                 println!();
@@ -1167,7 +1433,8 @@ async fn cmd_discover_whales(
     use polymarket_client_sdk::gamma::types::request::EventsRequest;
 
     let mut condition_ids: Vec<alloy::primitives::B256> = Vec::new();
-    let mut market_names: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut market_names: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
     let tag_label;
 
     if let Some(cid_str) = market_cid {
@@ -1199,7 +1466,11 @@ async fn cmd_discover_whales(
                 }
             }
         }
-        eprintln!("Scanning {} markets in [{}]...", condition_ids.len(), tag_slug);
+        eprintln!(
+            "Scanning {} markets in [{}]...",
+            condition_ids.len(),
+            tag_slug
+        );
     }
 
     if condition_ids.is_empty() {
@@ -1208,7 +1479,8 @@ async fn cmd_discover_whales(
     }
 
     // Query holders for each market (batch in chunks to avoid API limits)
-    let mut whale_map: std::collections::HashMap<String, (f64, u32, Option<String>)> = std::collections::HashMap::new();
+    let mut whale_map: std::collections::HashMap<String, (f64, u32, Option<String>)> =
+        std::collections::HashMap::new();
 
     for chunk in condition_ids.chunks(5) {
         let request = HoldersRequest::builder()
@@ -1242,15 +1514,23 @@ async fn cmd_discover_whales(
 
     match output {
         OutputFormat::Table => {
-            println!("--- Top Holders [{}] ({} whales, min ${:.0}) ---\n", tag_label, whales.len(), min_position);
+            println!(
+                "--- Top Holders [{}] ({} whales, min ${:.0}) ---\n",
+                tag_label,
+                whales.len(),
+                min_position
+            );
             for (addr, amount, count, name) in whales.iter().take(20) {
                 let short = if addr.len() >= 12 {
-                    format!("{}...{}", &addr[..8], &addr[addr.len()-4..])
+                    format!("{}...{}", &addr[..8], &addr[addr.len() - 4..])
                 } else {
                     addr.clone()
                 };
                 let name_str = name.as_deref().unwrap_or("");
-                println!("  ${:<10.0} across {:<2} markets  {}  {}", amount, count, short, name_str);
+                println!(
+                    "  ${:<10.0} across {:<2} markets  {}  {}",
+                    amount, count, short, name_str
+                );
             }
         }
         OutputFormat::Json => {
@@ -1276,7 +1556,9 @@ async fn cmd_discover_whales(
                 stale: Some(false),
                 disabled: None,
             };
-            if store::add_wallet(wallet)? { added += 1; }
+            if store::add_wallet(wallet)? {
+                added += 1;
+            }
         }
         println!("\nAuto-watched {added} new wallet(s) tagged \"{tag_label}-holder\"");
     }
@@ -1293,13 +1575,27 @@ async fn cmd_discover_auto(
     auto_watch: bool,
     output: &OutputFormat,
 ) -> Result<()> {
-    let tag_list: Vec<&str> = tags.split(',').map(|t| t.trim()).filter(|t| !t.is_empty()).collect();
+    let tag_list: Vec<&str> = tags
+        .split(',')
+        .map(|t| t.trim())
+        .filter(|t| !t.is_empty())
+        .collect();
 
     println!("=== Discover Auto: {} tag(s) ===\n", tag_list.len());
 
     for tag in &tag_list {
         println!("--- [{tag}] ---");
-        cmd_discover_whales(client, gamma_client, Some(tag), None, min_position, limit, auto_watch, output).await?;
+        cmd_discover_whales(
+            client,
+            gamma_client,
+            Some(tag),
+            None,
+            min_position,
+            limit,
+            auto_watch,
+            output,
+        )
+        .await?;
         println!();
     }
 
@@ -1325,7 +1621,10 @@ fn cmd_watch(address: &str, tag: Option<String>, output: &OutputFormat) -> Resul
         match output {
             OutputFormat::Table => println!("Watching {address}"),
             OutputFormat::Json => {
-                println!("{}", serde_json::json!({"watched": true, "address": address}));
+                println!(
+                    "{}",
+                    serde_json::json!({"watched": true, "address": address})
+                );
             }
         }
     } else {
@@ -1438,7 +1737,12 @@ async fn cmd_scan(
         if matches!(sig.signal_type, crate::smart::SignalType::ClosePosition) {
             let exit_price: f64 = sig.price.parse().unwrap_or(0.0);
             if exit_price > 0.0 {
-                match store::close_follow_position(&sig.condition_id, &sig.outcome, exit_price, "scan: whale ClosePosition") {
+                match store::close_follow_position(
+                    &sig.condition_id,
+                    &sig.outcome,
+                    exit_price,
+                    "scan: whale ClosePosition",
+                ) {
                     Ok(true) => {
                         eprintln!(
                             "Closed follow position: {} [{}] @ {exit_price}",
@@ -1501,11 +1805,7 @@ fn cmd_signals(limit: usize, output: &OutputFormat) -> Result<()> {
     print_signals(&signals, output)
 }
 
-async fn cmd_profile(
-    client: &data::Client,
-    address: &str,
-    output: &OutputFormat,
-) -> Result<()> {
+async fn cmd_profile(client: &data::Client, address: &str, output: &OutputFormat) -> Result<()> {
     let score = scorer::score_wallet(client, address).await?;
 
     let wallets = store::load_wallets()?;
@@ -1573,7 +1873,9 @@ fn filter_records(
 
 /// Calculate PnL accounting for BUY vs SELL direction.
 fn calc_open_pnl(side: &str, amount_usdc: f64, entry_price: f64, current_price: f64) -> f64 {
-    if entry_price <= 0.0 { return 0.0; }
+    if entry_price <= 0.0 {
+        return 0.0;
+    }
     let shares = amount_usdc / entry_price;
     if side == "SELL" {
         // SELL profits when price drops
@@ -1610,7 +1912,11 @@ async fn cmd_follow(
             sig.market_title,
             sig.outcome,
             sig.price,
-            if dir == SignalDirection::Buy { "BUY" } else { "SELL" },
+            if dir == SignalDirection::Buy {
+                "BUY"
+            } else {
+                "SELL"
+            },
         );
     }
 
@@ -1662,7 +1968,10 @@ async fn cmd_follow(
     };
 
     let order_id = if dry_run {
-        println!("[DRY RUN] Would place {side_str} order for ${amount:.2} on {}", signal.market_title);
+        println!(
+            "[DRY RUN] Would place {side_str} order for ${amount:.2} on {}",
+            signal.market_title
+        );
         None
     } else {
         let result = place_follow_order(
@@ -1701,7 +2010,10 @@ async fn cmd_follow(
         exit_price: None,
         realized_pnl: None,
         position_id: Some(pos_id),
-        entry_reason: Some(format!("manual follow: {} {}", signal.confidence, signal.signal_type)),
+        entry_reason: Some(format!(
+            "manual follow: {} {}",
+            signal.confidence, signal.signal_type
+        )),
         exit_reason: None,
     };
     store::append_follow_record(&record)?;
@@ -1853,7 +2165,10 @@ async fn cmd_auto_follow(
             exit_price: None,
             realized_pnl: None,
             position_id: Some(pos_id),
-            entry_reason: Some(format!("auto-follow: {} {}", sig.confidence, sig.signal_type)),
+            entry_reason: Some(format!(
+                "auto-follow: {} {}",
+                sig.confidence, sig.signal_type
+            )),
             exit_reason: None,
         };
         store::append_follow_record(&record)?;
@@ -1905,8 +2220,8 @@ async fn place_follow_order(
     let signer = crate::auth::resolve_signer(private_key)?;
     let clob_client = crate::auth::authenticate_with_signer(&signer, signature_type).await?;
 
-    let token_id = U256::from_str(asset)
-        .map_err(|_| anyhow::anyhow!("Invalid token_id: {asset}"))?;
+    let token_id =
+        U256::from_str(asset).map_err(|_| anyhow::anyhow!("Invalid token_id: {asset}"))?;
 
     let side = match direction {
         crate::smart::SignalDirection::Buy => Side::Buy,
@@ -1932,7 +2247,12 @@ async fn place_follow_order(
     Ok(result.order_id)
 }
 
-fn cmd_history(limit: usize, period: &str, status_filter: &str, output: &OutputFormat) -> Result<()> {
+fn cmd_history(
+    limit: usize,
+    period: &str,
+    status_filter: &str,
+    output: &OutputFormat,
+) -> Result<()> {
     let all_records = store::load_follow_records()?;
     let mut records = filter_records(&all_records, period, status_filter);
     records.reverse(); // newest first
@@ -1971,13 +2291,17 @@ fn cmd_history(limit: usize, period: &str, status_filter: &str, output: &OutputF
             let rows: Vec<HRow> = records
                 .iter()
                 .map(|r| {
-                    let status_str = r.status.as_ref()
+                    let status_str = r
+                        .status
+                        .as_ref()
                         .map(|s| s.to_string())
                         .unwrap_or_else(|| "OPEN".to_string());
-                    let exit_str = r.exit_price
+                    let exit_str = r
+                        .exit_price
                         .map(|p| format!("{p:.2}"))
                         .unwrap_or_else(|| "—".to_string());
-                    let pnl_str = r.realized_pnl
+                    let pnl_str = r
+                        .realized_pnl
                         .map(|p| format!("{p:+.2}"))
                         .unwrap_or_else(|| "—".to_string());
                     HRow {
@@ -2057,7 +2381,11 @@ fn cmd_roi(
             let exit = r.exit_price.unwrap_or(entry_price);
             pnl = rpnl;
             current_price = exit;
-            roi_pct = if r.amount_usdc > 0.0 { (rpnl / r.amount_usdc) * 100.0 } else { 0.0 };
+            roi_pct = if r.amount_usdc > 0.0 {
+                (rpnl / r.amount_usdc) * 100.0
+            } else {
+                0.0
+            };
             realized_pnl_total += rpnl;
             closed_total += 1;
             if rpnl > 0.0 {
@@ -2065,9 +2393,16 @@ fn cmd_roi(
             }
         } else {
             // Open trade: use snapshot price, account for BUY/SELL direction
-            current_price = price_map.get(&(r.condition_id.clone(), r.outcome.clone())).copied().unwrap_or(entry_price);
+            current_price = price_map
+                .get(&(r.condition_id.clone(), r.outcome.clone()))
+                .copied()
+                .unwrap_or(entry_price);
             pnl = calc_open_pnl(&r.side, r.amount_usdc, entry_price, current_price);
-            roi_pct = if r.amount_usdc > 0.0 { (pnl / r.amount_usdc) * 100.0 } else { 0.0 };
+            roi_pct = if r.amount_usdc > 0.0 {
+                (pnl / r.amount_usdc) * 100.0
+            } else {
+                0.0
+            };
             unrealized_pnl_total += pnl;
         }
 
@@ -2085,12 +2420,20 @@ fn cmd_roi(
             current: current_price,
             pnl,
             roi_pct,
-            status: r.status.as_ref().map(|s| s.to_string()).unwrap_or_else(|| "OPEN".to_string()),
+            status: r
+                .status
+                .as_ref()
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "OPEN".to_string()),
         });
     }
 
     let total_pnl = realized_pnl_total + unrealized_pnl_total;
-    let total_roi = if total_invested > 0.0 { (total_pnl / total_invested) * 100.0 } else { 0.0 };
+    let total_roi = if total_invested > 0.0 {
+        (total_pnl / total_invested) * 100.0
+    } else {
+        0.0
+    };
     let closed_win_rate = if closed_total > 0 {
         closed_wins as f64 / closed_total as f64 * 100.0
     } else {
@@ -2142,8 +2485,13 @@ fn cmd_roi(
             let table = Table::new(trows).with(Style::rounded()).to_string();
             println!("{table}");
             println!();
-            println!("  Realized PnL:   {realized_pnl_total:+.2} ({closed_total} closed, {closed_win_rate:.0}% win rate)");
-            println!("  Unrealized PnL: {unrealized_pnl_total:+.2} ({} open)", rows.len() as u32 - closed_total);
+            println!(
+                "  Realized PnL:   {realized_pnl_total:+.2} ({closed_total} closed, {closed_win_rate:.0}% win rate)"
+            );
+            println!(
+                "  Unrealized PnL: {unrealized_pnl_total:+.2} ({} open)",
+                rows.len() as u32 - closed_total
+            );
             println!("  Total PnL:      {total_pnl:+.2} ({total_roi:+.1}%)");
         }
         OutputFormat::Json => {
@@ -2185,7 +2533,11 @@ struct RoiRow {
 
 // ── Backtest ────────────────────────────────────────────────────
 
-fn cmd_backtest(amount: f64, min_confidence: SignalConfidence, output: &OutputFormat) -> Result<()> {
+fn cmd_backtest(
+    amount: f64,
+    min_confidence: SignalConfidence,
+    output: &OutputFormat,
+) -> Result<()> {
     let all_signals = store::load_signals(1000)?; // load all
     if all_signals.is_empty() {
         println!("No signals to backtest. Run `polymarket smart scan` to generate signals first.");
@@ -2382,7 +2734,8 @@ fn build_live_dashboard() -> String {
     let snapshots = store::load_all_snapshots().unwrap_or_default();
     let odds_watches = store::load_odds_watches().unwrap_or_default();
     let odds_alerts = store::load_odds_alerts(30).unwrap_or_default();
-    let price_history = store::load_price_history(Utc::now() - chrono::Duration::hours(24)).unwrap_or_default();
+    let price_history =
+        store::load_price_history(Utc::now() - chrono::Duration::hours(24)).unwrap_or_default();
 
     let wallet_positions: std::collections::HashMap<String, usize> = snapshots
         .iter()
@@ -2434,26 +2787,50 @@ fn build_live_dashboard() -> String {
     let mut live_invested = 0.0f64;
     let mut live_pnl = 0.0f64;
 
-    let build_follow_row = |r: &FollowRecord, price_map: &std::collections::HashMap<(String, String), f64>| -> (String, f64) {
+    let build_follow_row = |r: &FollowRecord,
+                            price_map: &std::collections::HashMap<(String, String), f64>|
+     -> (String, f64) {
         let entry = r.effective_entry();
         let (pnl, current);
         if !r.is_open() {
             pnl = r.realized_pnl.unwrap_or(0.0);
             current = r.exit_price.unwrap_or(entry);
         } else {
-            current = price_map.get(&(r.condition_id.clone(), r.outcome.clone())).copied().unwrap_or(entry);
+            current = price_map
+                .get(&(r.condition_id.clone(), r.outcome.clone()))
+                .copied()
+                .unwrap_or(entry);
             pnl = calc_open_pnl(&r.side, r.amount_usdc, entry, current);
         }
-        let roi = if r.amount_usdc > 0.0 { pnl / r.amount_usdc * 100.0 } else { 0.0 };
+        let roi = if r.amount_usdc > 0.0 {
+            pnl / r.amount_usdc * 100.0
+        } else {
+            0.0
+        };
         let pnl_cls = if pnl >= 0.0 { "text-green" } else { "text-red" };
-        let status = r.status.as_ref().map(|s| s.to_string()).unwrap_or_else(|| "OPEN".to_string());
-        let status_cls = match status.as_str() { "CLOSED" => "color:#60a5fa", _ => "color:#94a3b8" };
+        let status = r
+            .status
+            .as_ref()
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "OPEN".to_string());
+        let status_cls = match status.as_str() {
+            "CLOSED" => "color:#60a5fa",
+            _ => "color:#94a3b8",
+        };
         let row = format!(
             "<tr><td>{}</td><td style='{}'>{}</td><td>{}</td><td>{}</td><td>${:.2}</td><td>{:.3}</td><td>{:.3}</td><td class='{}'>{:+.2}</td><td class='{}'>{:+.1}%</td></tr>",
             r.timestamp.format("%m-%d %H:%M"),
-            status_cls, status, html_escape(&r.side),
-            html_escape(&r.market_title), r.amount_usdc, entry, current,
-            pnl_cls, pnl, pnl_cls, roi
+            status_cls,
+            status,
+            html_escape(&r.side),
+            html_escape(&r.market_title),
+            r.amount_usdc,
+            entry,
+            current,
+            pnl_cls,
+            pnl,
+            pnl_cls,
+            roi
         );
         (row, pnl)
     };
@@ -2481,7 +2858,11 @@ fn build_live_dashboard() -> String {
         }
 
         // Skip crypto trades — rendered in separate section
-        if r.entry_reason.as_deref().map(|e| e.starts_with("crypto:")).unwrap_or(false) {
+        if r.entry_reason
+            .as_deref()
+            .map(|e| e.starts_with("crypto:"))
+            .unwrap_or(false)
+        {
             continue;
         }
 
@@ -2492,32 +2873,62 @@ fn build_live_dashboard() -> String {
         // Period classification for trade history filter
         let age_hours = (utc_now - r.timestamp).num_hours();
         let mut periods = Vec::new();
-        if age_hours < 24 { periods.push("today"); }
-        if age_hours < 168 { periods.push("week"); }
-        if age_hours < 720 { periods.push("month"); }
+        if age_hours < 24 {
+            periods.push("today");
+        }
+        if age_hours < 168 {
+            periods.push("week");
+        }
+        if age_hours < 720 {
+            periods.push("month");
+        }
         let p_attr = periods.join(" ");
 
         if r.is_open() {
-            let current = price_map.get(&(r.condition_id.clone(), r.outcome.clone())).copied().unwrap_or(entry);
+            let current = price_map
+                .get(&(r.condition_id.clone(), r.outcome.clone()))
+                .copied()
+                .unwrap_or(entry);
             let pnl = calc_open_pnl(&r.side, r.amount_usdc, entry, current);
-            let roi = if r.amount_usdc > 0.0 { pnl / r.amount_usdc * 100.0 } else { 0.0 };
+            let roi = if r.amount_usdc > 0.0 {
+                pnl / r.amount_usdc * 100.0
+            } else {
+                0.0
+            };
             let pnl_cls = if pnl >= 0.0 { "text-green" } else { "text-red" };
             paper_pnl += pnl;
-            if pnl > 0.0 { paper_wins += 1; }
+            if pnl > 0.0 {
+                paper_wins += 1;
+            }
             paper_open_invested += r.amount_usdc;
             paper_open_pnl += pnl;
 
             // Tab 1: Open Positions — build sparkline + 24h change
             let price_key = format!("{}:{}", r.condition_id, r.outcome);
-            let hist_prices: Vec<f64> = price_history.iter()
+            let hist_prices: Vec<f64> = price_history
+                .iter()
                 .filter_map(|s| s.prices.get(&price_key).copied())
                 .collect();
             let sparkline = build_mini_sparkline(&hist_prices, current);
             let change_24h = if let Some(&first) = hist_prices.first() {
-                if first > 0.0 { ((current - first) / first) * 100.0 } else { 0.0 }
-            } else { 0.0 };
-            let ch_cls = if change_24h >= 0.0 { "text-green" } else { "text-red" };
-            let ch_str = if hist_prices.is_empty() { "—".to_string() } else { format!("{:+.1}%", change_24h) };
+                if first > 0.0 {
+                    ((current - first) / first) * 100.0
+                } else {
+                    0.0
+                }
+            } else {
+                0.0
+            };
+            let ch_cls = if change_24h >= 0.0 {
+                "text-green"
+            } else {
+                "text-red"
+            };
+            let ch_str = if hist_prices.is_empty() {
+                "—".to_string()
+            } else {
+                format!("{:+.1}%", change_24h)
+            };
 
             let entry_reason = r.entry_reason.as_deref().unwrap_or("—");
             open_rows.push_str(&format!(
@@ -2537,13 +2948,21 @@ fn build_live_dashboard() -> String {
         } else {
             let pnl = r.realized_pnl.unwrap_or(0.0);
             let exit = r.exit_price.unwrap_or(entry);
-            let roi = if r.amount_usdc > 0.0 { pnl / r.amount_usdc * 100.0 } else { 0.0 };
+            let roi = if r.amount_usdc > 0.0 {
+                pnl / r.amount_usdc * 100.0
+            } else {
+                0.0
+            };
             let pnl_cls = if pnl >= 0.0 { "text-green" } else { "text-red" };
             let row_cls = if pnl >= 0.0 { "row-win" } else { "row-loss" };
             paper_pnl += pnl;
-            if pnl > 0.0 { paper_wins += 1; }
+            if pnl > 0.0 {
+                paper_wins += 1;
+            }
             paper_closed_count += 1;
-            if pnl > 0.0 { paper_closed_wins += 1; }
+            if pnl > 0.0 {
+                paper_closed_wins += 1;
+            }
             paper_closed_pnl_values.push(pnl);
 
             let close_time = r.closed_at.unwrap_or(utc_now);
@@ -2569,7 +2988,11 @@ fn build_live_dashboard() -> String {
             ));
 
             // Tab 2: Trade History
-            let status_str = r.status.as_ref().map(|s| s.to_string()).unwrap_or_else(|| "CLOSED".to_string());
+            let status_str = r
+                .status
+                .as_ref()
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "CLOSED".to_string());
             history_rows_vec.push((r.timestamp, format!(
                 "<tr data-p='{}'><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{:.3}</td><td>${:.2}</td><td style='color:#60a5fa'>{}</td></tr>",
                 p_attr, r.timestamp.format("%m-%d %H:%M"), html_escape(&r.side),
@@ -2588,27 +3011,69 @@ fn build_live_dashboard() -> String {
     // Build equity curve (cumulative PnL)
     equity_points.sort_by_key(|p| p.0);
     let mut cumulative = 0.0f64;
-    let eq_cumulative: Vec<(i64, f64)> = equity_points.iter().map(|&(t, pnl)| {
-        cumulative += pnl;
-        (t, cumulative)
-    }).collect();
+    let eq_cumulative: Vec<(i64, f64)> = equity_points
+        .iter()
+        .map(|&(t, pnl)| {
+            cumulative += pnl;
+            (t, cumulative)
+        })
+        .collect();
 
     // Build crypto section (separate from smart money paper trades)
-    let (crypto_section, crypto_stats) = build_crypto_paper_section(&follows, &price_map, &price_history);
+    let (crypto_section, crypto_stats) =
+        build_crypto_paper_section(&follows, &price_map, &price_history);
 
     let total_invested = paper_invested + live_invested + crypto_stats.2;
     let total_pnl = paper_pnl + live_pnl + crypto_stats.1;
-    let paper_win_rate = if paper_count > 0 { paper_wins as f64 / paper_count as f64 * 100.0 } else { 0.0 };
-    let closed_win_rate = if paper_closed_count > 0 { paper_closed_wins as f64 / paper_closed_count as f64 * 100.0 } else { 0.0 };
-    let avg_pnl = if !paper_closed_pnl_values.is_empty() { paper_closed_pnl_values.iter().sum::<f64>() / paper_closed_pnl_values.len() as f64 } else { 0.0 };
-    let best_trade = paper_closed_pnl_values.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-    let worst_trade = paper_closed_pnl_values.iter().cloned().fold(f64::INFINITY, f64::min);
-    let avg_hold = if !paper_closed_hold_hours.is_empty() { paper_closed_hold_hours.iter().sum::<f64>() / paper_closed_hold_hours.len() as f64 } else { 0.0 };
-    let avg_hold_str = if avg_hold < 1.0 { "&lt;1h".to_string() } else if avg_hold < 24.0 { format!("{:.0}h", avg_hold) } else { format!("{:.0}d", avg_hold / 24.0) };
+    let paper_win_rate = if paper_count > 0 {
+        paper_wins as f64 / paper_count as f64 * 100.0
+    } else {
+        0.0
+    };
+    let closed_win_rate = if paper_closed_count > 0 {
+        paper_closed_wins as f64 / paper_closed_count as f64 * 100.0
+    } else {
+        0.0
+    };
+    let avg_pnl = if !paper_closed_pnl_values.is_empty() {
+        paper_closed_pnl_values.iter().sum::<f64>() / paper_closed_pnl_values.len() as f64
+    } else {
+        0.0
+    };
+    let best_trade = paper_closed_pnl_values
+        .iter()
+        .cloned()
+        .fold(f64::NEG_INFINITY, f64::max);
+    let worst_trade = paper_closed_pnl_values
+        .iter()
+        .cloned()
+        .fold(f64::INFINITY, f64::min);
+    let avg_hold = if !paper_closed_hold_hours.is_empty() {
+        paper_closed_hold_hours.iter().sum::<f64>() / paper_closed_hold_hours.len() as f64
+    } else {
+        0.0
+    };
+    let avg_hold_str = if avg_hold < 1.0 {
+        "&lt;1h".to_string()
+    } else if avg_hold < 24.0 {
+        format!("{:.0}h", avg_hold)
+    } else {
+        format!("{:.0}d", avg_hold / 24.0)
+    };
 
     let equity_svg = build_equity_curve_svg(&eq_cumulative);
-    let paper_open_count = follows.iter().filter(|r| r.dry_run && r.is_open()
-        && !r.entry_reason.as_deref().map(|e| e.starts_with("crypto:")).unwrap_or(false)).count();
+    let paper_open_count = follows
+        .iter()
+        .filter(|r| {
+            r.dry_run
+                && r.is_open()
+                && !r
+                    .entry_reason
+                    .as_deref()
+                    .map(|e| e.starts_with("crypto:"))
+                    .unwrap_or(false)
+        })
+        .count();
 
     // Build paper section with exchange-style tabs
     let paper_section = if paper_count == 0 {
@@ -2650,7 +3115,11 @@ fn build_live_dashboard() -> String {
         let tab1 = if open_rows.is_empty() {
             "<p class='empty'>No open positions.</p>".to_string()
         } else {
-            let oc = if paper_open_pnl >= 0.0 { "#4ade80" } else { "#f87171" };
+            let oc = if paper_open_pnl >= 0.0 {
+                "#4ade80"
+            } else {
+                "#f87171"
+            };
             format!(
                 "<table><thead><tr><th>Time</th><th>Market</th><th>Outcome</th><th>Side</th><th>Entry</th><th>Current</th><th>Size</th><th>PnL</th><th>ROI</th><th>24h</th><th>Trend</th><th>Entry Reason</th></tr></thead><tbody>{}</tbody></table>\
                  <p style='margin-top:.5rem;color:#94a3b8;font-size:.8rem'>{} positions | ${:.2} invested | Unrealized: <span style='color:{}'>{:+.2}</span></p>",
@@ -2691,11 +3160,31 @@ fn build_live_dashboard() -> String {
         };
 
         // Tab 4: Performance
-        let best_str = if paper_closed_pnl_values.is_empty() { "—".to_string() } else { format!("${:+.2}", best_trade) };
-        let worst_str = if paper_closed_pnl_values.is_empty() { "—".to_string() } else { format!("${:+.2}", worst_trade) };
-        let best_color = if paper_closed_pnl_values.is_empty() || best_trade >= 0.0 { "#4ade80" } else { "#f87171" };
-        let worst_color = if paper_closed_pnl_values.is_empty() || worst_trade >= 0.0 { "#4ade80" } else { "#f87171" };
-        let pnl_c = if paper_pnl >= 0.0 { "#4ade80" } else { "#f87171" };
+        let best_str = if paper_closed_pnl_values.is_empty() {
+            "—".to_string()
+        } else {
+            format!("${:+.2}", best_trade)
+        };
+        let worst_str = if paper_closed_pnl_values.is_empty() {
+            "—".to_string()
+        } else {
+            format!("${:+.2}", worst_trade)
+        };
+        let best_color = if paper_closed_pnl_values.is_empty() || best_trade >= 0.0 {
+            "#4ade80"
+        } else {
+            "#f87171"
+        };
+        let worst_color = if paper_closed_pnl_values.is_empty() || worst_trade >= 0.0 {
+            "#4ade80"
+        } else {
+            "#f87171"
+        };
+        let pnl_c = if paper_pnl >= 0.0 {
+            "#4ade80"
+        } else {
+            "#f87171"
+        };
         let avg_c = if avg_pnl >= 0.0 { "#4ade80" } else { "#f87171" };
         let tab4 = format!(
             "<div class='perf-cards'>\
@@ -2709,12 +3198,18 @@ fn build_live_dashboard() -> String {
                <div class='perf-card'><div class='perf-label'>Closed</div><div class='perf-val'>{}</div></div>\
              </div>\
              <div style='margin-top:1rem'>{}</div>",
-            paper_count, closed_win_rate,
-            pnl_c, paper_pnl,
-            avg_c, avg_pnl,
-            best_color, best_str,
-            worst_color, worst_str,
-            avg_hold_str, paper_closed_count,
+            paper_count,
+            closed_win_rate,
+            pnl_c,
+            paper_pnl,
+            avg_c,
+            avg_pnl,
+            best_color,
+            best_str,
+            worst_color,
+            worst_str,
+            avg_hold_str,
+            paper_closed_count,
             equity_svg
         );
 
@@ -2738,8 +3233,7 @@ fn build_live_dashboard() -> String {
                <div class='tab-panel' id='panel-perf'>{}</div>\
              </div>\
              </div>",
-            tab_css, paper_count, paper_open_count, paper_closed_count,
-            tab1, tab2, tab3, tab4
+            tab_css, paper_count, paper_open_count, paper_closed_count, tab1, tab2, tab3, tab4
         )
     };
 
@@ -2779,7 +3273,11 @@ fn build_live_dashboard() -> String {
         })
         .collect();
 
-    let pnl_color = if total_pnl >= 0.0 { "#4ade80" } else { "#f87171" };
+    let pnl_color = if total_pnl >= 0.0 {
+        "#4ade80"
+    } else {
+        "#f87171"
+    };
 
     format!(
         r##"<!DOCTYPE html>
@@ -2906,12 +3404,20 @@ tr:hover td{{background:#111827aa}}
         odds_alert_count = odds_alerts.len(),
         sm_count = paper_count,
         sm_pnl = paper_pnl,
-        sm_pnl_color = if paper_pnl >= 0.0 { "#4ade80" } else { "#f87171" },
+        sm_pnl_color = if paper_pnl >= 0.0 {
+            "#4ade80"
+        } else {
+            "#f87171"
+        },
         sm_invested = paper_invested,
         sm_win_rate = paper_win_rate,
         crypto_count = crypto_stats.0,
         crypto_pnl = crypto_stats.1,
-        crypto_pnl_color = if crypto_stats.1 >= 0.0 { "#4ade80" } else { "#f87171" },
+        crypto_pnl_color = if crypto_stats.1 >= 0.0 {
+            "#4ade80"
+        } else {
+            "#f87171"
+        },
         crypto_invested = crypto_stats.2,
         crypto_win_rate = crypto_stats.3,
         live_count = follows.iter().filter(|r| !r.dry_run).count(),
@@ -2919,32 +3425,49 @@ tr:hover td{{background:#111827aa}}
         total_pnl = total_pnl,
         pnl_color = pnl_color,
         odds_section = if odds_rows.is_empty() {
-            "<p class='empty'>No markets watched. Use <code>polymarket smart odds watch</code></p>".into()
+            "<p class='empty'>No markets watched. Use <code>polymarket smart odds watch</code></p>"
+                .into()
         } else {
-            format!("<table><thead><tr><th>Label</th><th>Token</th><th>Threshold</th><th>Baseline</th><th>Last</th><th>Change</th><th>Scanned</th></tr></thead><tbody>{odds_rows}</tbody></table>")
+            format!(
+                "<table><thead><tr><th>Label</th><th>Token</th><th>Threshold</th><th>Baseline</th><th>Last</th><th>Change</th><th>Scanned</th></tr></thead><tbody>{odds_rows}</tbody></table>"
+            )
         },
         odds_alerts_section = if odds_alerts_rows.is_empty() {
             "<p class='empty'>No alerts yet.</p>".into()
         } else {
-            format!("<table><thead><tr><th>Time</th><th>Market</th><th>Change</th><th>From</th><th>To</th></tr></thead><tbody>{odds_alerts_rows}</tbody></table>")
+            format!(
+                "<table><thead><tr><th>Time</th><th>Market</th><th>Change</th><th>From</th><th>To</th></tr></thead><tbody>{odds_alerts_rows}</tbody></table>"
+            )
         },
         wallets_section = if wallets_rows.is_empty() {
             "<p class='empty'>No wallets being watched.</p>".into()
         } else {
-            format!("<table><thead><tr><th>Address</th><th>Tag</th><th>Score</th><th>Positions</th></tr></thead><tbody>{wallets_rows}</tbody></table>")
+            format!(
+                "<table><thead><tr><th>Address</th><th>Tag</th><th>Score</th><th>Positions</th></tr></thead><tbody>{wallets_rows}</tbody></table>"
+            )
         },
         signals_section = if signals_rows.is_empty() {
             "<p class='empty'>No signals yet. Run scan to generate.</p>".into()
         } else {
-            format!("<table><thead><tr><th>Time</th><th>Type</th><th>Conf</th><th>Market</th><th>Outcome</th><th>Price</th><th>Size</th></tr></thead><tbody>{signals_rows}</tbody></table>")
+            format!(
+                "<table><thead><tr><th>Time</th><th>Type</th><th>Conf</th><th>Market</th><th>Outcome</th><th>Price</th><th>Size</th></tr></thead><tbody>{signals_rows}</tbody></table>"
+            )
         },
         paper_section = paper_section,
         crypto_section = crypto_section,
         live_section = if live_rows.is_empty() {
             "<p class='empty'>No live trades yet.</p>".into()
         } else {
-            let live_roi = if live_invested > 0.0 { live_pnl / live_invested * 100.0 } else { 0.0 };
-            let lc = if live_pnl >= 0.0 { "#4ade80" } else { "#f87171" };
+            let live_roi = if live_invested > 0.0 {
+                live_pnl / live_invested * 100.0
+            } else {
+                0.0
+            };
+            let lc = if live_pnl >= 0.0 {
+                "#4ade80"
+            } else {
+                "#f87171"
+            };
             format!(
                 "<table><thead><tr><th>Time</th><th>Status</th><th>Side</th><th>Market</th><th>Invested</th><th>Entry</th><th>Now/Exit</th><th>PnL</th><th>ROI</th></tr></thead><tbody>{live_rows}</tbody></table>\
                  <p style='margin-top:.5rem;color:#94a3b8;font-size:.8rem'>Live total: ${live_invested:.2} | PnL: <span style='color:{lc}'>{live_pnl:+.2}</span> ({live_roi:+.1}%)</p>"
@@ -2961,8 +3484,15 @@ fn build_crypto_paper_section(
     price_history: &[crate::smart::PriceSnapshot],
 ) -> (String, (u32, f64, f64, f64)) {
     let utc_now = Utc::now();
-    let crypto_follows: Vec<&FollowRecord> = follows.iter()
-        .filter(|r| r.dry_run && r.entry_reason.as_deref().map(|e| e.starts_with("crypto:")).unwrap_or(false))
+    let crypto_follows: Vec<&FollowRecord> = follows
+        .iter()
+        .filter(|r| {
+            r.dry_run
+                && r.entry_reason
+                    .as_deref()
+                    .map(|e| e.starts_with("crypto:"))
+                    .unwrap_or(false)
+        })
         .collect();
 
     if crypto_follows.is_empty() {
@@ -2998,32 +3528,62 @@ fn build_crypto_paper_section(
 
         let age_hours = (utc_now - r.timestamp).num_hours();
         let mut periods = Vec::new();
-        if age_hours < 24 { periods.push("today"); }
-        if age_hours < 168 { periods.push("week"); }
-        if age_hours < 720 { periods.push("month"); }
+        if age_hours < 24 {
+            periods.push("today");
+        }
+        if age_hours < 168 {
+            periods.push("week");
+        }
+        if age_hours < 720 {
+            periods.push("month");
+        }
         let p_attr = periods.join(" ");
 
         if r.is_open() {
-            let current = price_map.get(&(r.condition_id.clone(), r.outcome.clone())).copied().unwrap_or(entry);
+            let current = price_map
+                .get(&(r.condition_id.clone(), r.outcome.clone()))
+                .copied()
+                .unwrap_or(entry);
             let pnl = calc_open_pnl(&r.side, r.amount_usdc, entry, current);
-            let roi = if r.amount_usdc > 0.0 { pnl / r.amount_usdc * 100.0 } else { 0.0 };
+            let roi = if r.amount_usdc > 0.0 {
+                pnl / r.amount_usdc * 100.0
+            } else {
+                0.0
+            };
             let pnl_cls = if pnl >= 0.0 { "text-green" } else { "text-red" };
             total_pnl += pnl;
-            if pnl > 0.0 { wins += 1; }
+            if pnl > 0.0 {
+                wins += 1;
+            }
             open_invested += r.amount_usdc;
             open_pnl += pnl;
             open_count += 1;
 
             let price_key = format!("{}:{}", r.condition_id, r.outcome);
-            let hist_prices: Vec<f64> = price_history.iter()
+            let hist_prices: Vec<f64> = price_history
+                .iter()
                 .filter_map(|s| s.prices.get(&price_key).copied())
                 .collect();
             let sparkline = build_mini_sparkline(&hist_prices, current);
             let change_24h = if let Some(&first) = hist_prices.first() {
-                if first > 0.0 { ((current - first) / first) * 100.0 } else { 0.0 }
-            } else { 0.0 };
-            let ch_cls = if change_24h >= 0.0 { "text-green" } else { "text-red" };
-            let ch_str = if hist_prices.is_empty() { "—".to_string() } else { format!("{:+.1}%", change_24h) };
+                if first > 0.0 {
+                    ((current - first) / first) * 100.0
+                } else {
+                    0.0
+                }
+            } else {
+                0.0
+            };
+            let ch_cls = if change_24h >= 0.0 {
+                "text-green"
+            } else {
+                "text-red"
+            };
+            let ch_str = if hist_prices.is_empty() {
+                "—".to_string()
+            } else {
+                format!("{:+.1}%", change_24h)
+            };
             let entry_reason = r.entry_reason.as_deref().unwrap_or("—");
 
             open_rows.push_str(&format!(
@@ -3042,13 +3602,21 @@ fn build_crypto_paper_section(
         } else {
             let pnl = r.realized_pnl.unwrap_or(0.0);
             let exit = r.exit_price.unwrap_or(entry);
-            let roi = if r.amount_usdc > 0.0 { pnl / r.amount_usdc * 100.0 } else { 0.0 };
+            let roi = if r.amount_usdc > 0.0 {
+                pnl / r.amount_usdc * 100.0
+            } else {
+                0.0
+            };
             let pnl_cls = if pnl >= 0.0 { "text-green" } else { "text-red" };
             let row_cls = if pnl >= 0.0 { "row-win" } else { "row-loss" };
             total_pnl += pnl;
-            if pnl > 0.0 { wins += 1; }
+            if pnl > 0.0 {
+                wins += 1;
+            }
             closed_count += 1;
-            if pnl > 0.0 { closed_wins += 1; }
+            if pnl > 0.0 {
+                closed_wins += 1;
+            }
             closed_pnl_values.push(pnl);
 
             let close_time = r.closed_at.unwrap_or(utc_now);
@@ -3072,7 +3640,11 @@ fn build_crypto_paper_section(
                 html_escape(exit_reason)
             ));
 
-            let status_str = r.status.as_ref().map(|s| s.to_string()).unwrap_or_else(|| "CLOSED".to_string());
+            let status_str = r
+                .status
+                .as_ref()
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "CLOSED".to_string());
             history_rows_vec.push((r.timestamp, format!(
                 "<tr data-p='{}'><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{:.3}</td><td>${:.2}</td><td style='color:#60a5fa'>{}</td></tr>",
                 p_attr, r.timestamp.format("%m-%d %H:%M"), html_escape(&r.side),
@@ -3090,20 +3662,51 @@ fn build_crypto_paper_section(
     // Build equity curve
     equity_points.sort_by_key(|p| p.0);
     let mut cumulative = 0.0f64;
-    let eq_cumulative: Vec<(i64, f64)> = equity_points.iter().map(|&(t, pnl)| {
-        cumulative += pnl;
-        (t, cumulative)
-    }).collect();
+    let eq_cumulative: Vec<(i64, f64)> = equity_points
+        .iter()
+        .map(|&(t, pnl)| {
+            cumulative += pnl;
+            (t, cumulative)
+        })
+        .collect();
     let equity_svg = build_equity_curve_svg(&eq_cumulative);
 
     // Stats
-    let win_rate = if count > 0 { wins as f64 / count as f64 * 100.0 } else { 0.0 };
-    let closed_win_rate = if closed_count > 0 { closed_wins as f64 / closed_count as f64 * 100.0 } else { 0.0 };
-    let avg_pnl = if !closed_pnl_values.is_empty() { closed_pnl_values.iter().sum::<f64>() / closed_pnl_values.len() as f64 } else { 0.0 };
-    let best_trade = closed_pnl_values.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-    let worst_trade = closed_pnl_values.iter().cloned().fold(f64::INFINITY, f64::min);
-    let avg_hold = if !closed_hold_hours.is_empty() { closed_hold_hours.iter().sum::<f64>() / closed_hold_hours.len() as f64 } else { 0.0 };
-    let avg_hold_str = if avg_hold < 1.0 { "&lt;1h".to_string() } else if avg_hold < 24.0 { format!("{:.0}h", avg_hold) } else { format!("{:.0}d", avg_hold / 24.0) };
+    let win_rate = if count > 0 {
+        wins as f64 / count as f64 * 100.0
+    } else {
+        0.0
+    };
+    let closed_win_rate = if closed_count > 0 {
+        closed_wins as f64 / closed_count as f64 * 100.0
+    } else {
+        0.0
+    };
+    let avg_pnl = if !closed_pnl_values.is_empty() {
+        closed_pnl_values.iter().sum::<f64>() / closed_pnl_values.len() as f64
+    } else {
+        0.0
+    };
+    let best_trade = closed_pnl_values
+        .iter()
+        .cloned()
+        .fold(f64::NEG_INFINITY, f64::max);
+    let worst_trade = closed_pnl_values
+        .iter()
+        .cloned()
+        .fold(f64::INFINITY, f64::min);
+    let avg_hold = if !closed_hold_hours.is_empty() {
+        closed_hold_hours.iter().sum::<f64>() / closed_hold_hours.len() as f64
+    } else {
+        0.0
+    };
+    let avg_hold_str = if avg_hold < 1.0 {
+        "&lt;1h".to_string()
+    } else if avg_hold < 24.0 {
+        format!("{:.0}h", avg_hold)
+    } else {
+        format!("{:.0}d", avg_hold / 24.0)
+    };
 
     // Scoped tab CSS with c5m- prefix
     let tab_css = r#"<style>
@@ -3128,7 +3731,11 @@ fn build_crypto_paper_section(
     let tab1 = if open_rows.is_empty() {
         "<p class='empty'>No open positions.</p>".to_string()
     } else {
-        let oc = if open_pnl >= 0.0 { "#4ade80" } else { "#f87171" };
+        let oc = if open_pnl >= 0.0 {
+            "#4ade80"
+        } else {
+            "#f87171"
+        };
         format!(
             "<table><thead><tr><th>Time</th><th>Market</th><th>Outcome</th><th>Side</th><th>Entry</th><th>Current</th><th>Size</th><th>PnL</th><th>ROI</th><th>24h</th><th>Trend</th><th>Entry Reason</th></tr></thead><tbody>{}</tbody></table>\
              <p style='margin-top:.5rem;color:#94a3b8;font-size:.8rem'>{} positions | ${:.2} invested | Unrealized: <span style='color:{}'>{:+.2}</span></p>",
@@ -3168,11 +3775,31 @@ fn build_crypto_paper_section(
     };
 
     // Tab 4: Performance
-    let best_str = if closed_pnl_values.is_empty() { "—".to_string() } else { format!("${:+.2}", best_trade) };
-    let worst_str = if closed_pnl_values.is_empty() { "—".to_string() } else { format!("${:+.2}", worst_trade) };
-    let best_color = if closed_pnl_values.is_empty() || best_trade >= 0.0 { "#4ade80" } else { "#f87171" };
-    let worst_color = if closed_pnl_values.is_empty() || worst_trade >= 0.0 { "#4ade80" } else { "#f87171" };
-    let pnl_c = if total_pnl >= 0.0 { "#4ade80" } else { "#f87171" };
+    let best_str = if closed_pnl_values.is_empty() {
+        "—".to_string()
+    } else {
+        format!("${:+.2}", best_trade)
+    };
+    let worst_str = if closed_pnl_values.is_empty() {
+        "—".to_string()
+    } else {
+        format!("${:+.2}", worst_trade)
+    };
+    let best_color = if closed_pnl_values.is_empty() || best_trade >= 0.0 {
+        "#4ade80"
+    } else {
+        "#f87171"
+    };
+    let worst_color = if closed_pnl_values.is_empty() || worst_trade >= 0.0 {
+        "#4ade80"
+    } else {
+        "#f87171"
+    };
+    let pnl_c = if total_pnl >= 0.0 {
+        "#4ade80"
+    } else {
+        "#f87171"
+    };
     let avg_c = if avg_pnl >= 0.0 { "#4ade80" } else { "#f87171" };
     let tab4 = format!(
         "<div class='perf-cards'>\
@@ -3186,12 +3813,18 @@ fn build_crypto_paper_section(
            <div class='perf-card'><div class='perf-label'>Closed</div><div class='perf-val'>{}</div></div>\
          </div>\
          <div style='margin-top:1rem'>{}</div>",
-        count, closed_win_rate,
-        pnl_c, total_pnl,
-        avg_c, avg_pnl,
-        best_color, best_str,
-        worst_color, worst_str,
-        avg_hold_str, closed_count,
+        count,
+        closed_win_rate,
+        pnl_c,
+        total_pnl,
+        avg_c,
+        avg_pnl,
+        best_color,
+        best_str,
+        worst_color,
+        worst_str,
+        avg_hold_str,
+        closed_count,
         equity_svg
     );
 
@@ -3225,25 +3858,38 @@ fn build_crypto_paper_section(
 fn parse_duration(s: &str) -> Result<std::time::Duration> {
     let s = s.trim().to_lowercase();
     if let Some(n) = s.strip_suffix('s') {
-        let secs: u64 = n.parse().map_err(|_| anyhow::anyhow!("Invalid duration: {s}"))?;
+        let secs: u64 = n
+            .parse()
+            .map_err(|_| anyhow::anyhow!("Invalid duration: {s}"))?;
         return Ok(std::time::Duration::from_secs(secs));
     }
     if let Some(n) = s.strip_suffix('m') {
-        let mins: u64 = n.parse().map_err(|_| anyhow::anyhow!("Invalid duration: {s}"))?;
+        let mins: u64 = n
+            .parse()
+            .map_err(|_| anyhow::anyhow!("Invalid duration: {s}"))?;
         return Ok(std::time::Duration::from_secs(mins * 60));
     }
     if let Some(n) = s.strip_suffix('h') {
-        let hours: u64 = n.parse().map_err(|_| anyhow::anyhow!("Invalid duration: {s}"))?;
+        let hours: u64 = n
+            .parse()
+            .map_err(|_| anyhow::anyhow!("Invalid duration: {s}"))?;
         return Ok(std::time::Duration::from_secs(hours * 3600));
     }
     // Fallback: try as seconds
-    let secs: u64 = s.parse().map_err(|_| anyhow::anyhow!("Invalid duration: {s}. Use e.g. 30s, 3m, 1h"))?;
+    let secs: u64 = s
+        .parse()
+        .map_err(|_| anyhow::anyhow!("Invalid duration: {s}. Use e.g. 30s, 3m, 1h"))?;
     Ok(std::time::Duration::from_secs(secs))
 }
 
 fn split_keywords(s: Option<&str>) -> Vec<String> {
-    s.map(|v| v.split(',').map(|k| k.trim().to_lowercase()).filter(|k| !k.is_empty()).collect())
-        .unwrap_or_default()
+    s.map(|v| {
+        v.split(',')
+            .map(|k| k.trim().to_lowercase())
+            .filter(|k| !k.is_empty())
+            .collect()
+    })
+    .unwrap_or_default()
 }
 
 /// Check if a market resolves within `max_days` days based on its title.
@@ -3253,9 +3899,18 @@ fn market_within_horizon(title: &str, max_days: i64) -> bool {
     let today = Utc::now().date_naive();
 
     let months: &[(&str, u32)] = &[
-        ("january", 1), ("february", 2), ("march", 3), ("april", 4),
-        ("may", 5), ("june", 6), ("july", 7), ("august", 8),
-        ("september", 9), ("october", 10), ("november", 11), ("december", 12),
+        ("january", 1),
+        ("february", 2),
+        ("march", 3),
+        ("april", 4),
+        ("may", 5),
+        ("june", 6),
+        ("july", 7),
+        ("august", 8),
+        ("september", 9),
+        ("october", 10),
+        ("november", 11),
+        ("december", 12),
     ];
 
     // Find month in title
@@ -3302,7 +3957,11 @@ fn market_within_horizon(title: &str, max_days: i64) -> bool {
         .windows(4)
         .filter_map(|w| {
             let s = std::str::from_utf8(w).ok()?;
-            if s.starts_with("20") { s.parse::<i32>().ok() } else { None }
+            if s.starts_with("20") {
+                s.parse::<i32>().ok()
+            } else {
+                None
+            }
         })
         .find(|&y| (2025..=2030).contains(&y))
         .unwrap_or(chrono::Datelike::year(&today));
@@ -3325,12 +3984,16 @@ fn evaluate_triggers(
     let market_exclude = &config.market_exclude;
 
     let matches_include = |title: &str| -> bool {
-        if market_include.is_empty() { return true; }
+        if market_include.is_empty() {
+            return true;
+        }
         let lower = title.to_lowercase();
         market_include.iter().any(|kw| lower.contains(kw))
     };
     let matches_exclude = |title: &str| -> bool {
-        if market_exclude.is_empty() { return false; }
+        if market_exclude.is_empty() {
+            return false;
+        }
         let lower = title.to_lowercase();
         market_exclude.iter().any(|kw| lower.contains(kw))
     };
@@ -3340,17 +4003,31 @@ fn evaluate_triggers(
     // Check aggregated signals (multi-wallet convergence)
     if config.min_wallets > 1 {
         for agg in aggregated {
-            if (agg.wallet_count as u32) < config.min_wallets { continue; }
-            if confidence_rank(&agg.confidence) < confidence_rank(&config.min_confidence) { continue; }
+            if (agg.wallet_count as u32) < config.min_wallets {
+                continue;
+            }
+            if confidence_rank(&agg.confidence) < confidence_rank(&config.min_confidence) {
+                continue;
+            }
             // If any wallet in aggregation is a holder, skip include check
-            let has_holder = agg.signals.iter().any(|s| s.wallet_tag.as_deref().map_or(false, |t| t.contains("-holder")));
+            let has_holder = agg.signals.iter().any(|s| {
+                s.wallet_tag
+                    .as_deref()
+                    .map_or(false, |t| t.contains("-holder"))
+            });
             if has_holder {
-                if matches_exclude(&agg.market_title) { continue; }
+                if matches_exclude(&agg.market_title) {
+                    continue;
+                }
             } else {
-                if !matches_include(&agg.market_title) || matches_exclude(&agg.market_title) { continue; }
+                if !matches_include(&agg.market_title) || matches_exclude(&agg.market_title) {
+                    continue;
+                }
             }
             // Skip near-resolved markets
-            if agg.avg_price < 0.05 || agg.avg_price > 0.95 { continue; }
+            if agg.avg_price < 0.05 || agg.avg_price > 0.95 {
+                continue;
+            }
 
             let first_sig = agg.signals.first();
             triggers.push(TriggerEvent {
@@ -3361,7 +4038,10 @@ fn evaluate_triggers(
                 direction: agg.direction.clone(),
                 price: agg.avg_price,
                 wallet_count: agg.wallet_count as u32,
-                reason: format!("{} wallets converge on {} {}", agg.wallet_count, agg.direction, agg.outcome),
+                reason: format!(
+                    "{} wallets converge on {} {}",
+                    agg.wallet_count, agg.direction, agg.outcome
+                ),
                 condition_id: agg.condition_id.clone(),
                 asset: first_sig.map(|s| s.asset.clone()).unwrap_or_default(),
                 signal_id: first_sig.map(|s| s.id.clone()).unwrap_or_default(),
@@ -3371,34 +4051,55 @@ fn evaluate_triggers(
 
     // Check individual signals (if min_wallets <= 1 or as supplement)
     // Skip signals already covered by aggregated triggers
-    let aggregated_conditions: std::collections::HashSet<String> = triggers.iter().map(|t| t.condition_id.clone()).collect();
+    let aggregated_conditions: std::collections::HashSet<String> =
+        triggers.iter().map(|t| t.condition_id.clone()).collect();
 
     for sig in all_signals {
-        if aggregated_conditions.contains(&sig.condition_id) { continue; }
+        if aggregated_conditions.contains(&sig.condition_id) {
+            continue;
+        }
         // Only trigger on NewPosition — ClosePosition is handled separately (closes our BUY positions)
         if !matches!(sig.signal_type, crate::smart::SignalType::NewPosition) {
             continue;
         }
-        if confidence_rank(&sig.confidence) < confidence_rank(&config.min_confidence) { continue; }
+        if confidence_rank(&sig.confidence) < confidence_rank(&config.min_confidence) {
+            continue;
+        }
 
         // Market-first wallets (tag contains "-holder"): skip include check, only exclude
         // Leaderboard wallets: apply both include + exclude
-        let is_holder = sig.wallet_tag.as_deref().map_or(false, |t| t.contains("-holder"));
+        let is_holder = sig
+            .wallet_tag
+            .as_deref()
+            .map_or(false, |t| t.contains("-holder"));
         if is_holder {
-            if matches_exclude(&sig.market_title) { continue; }
+            if matches_exclude(&sig.market_title) {
+                continue;
+            }
         } else {
-            if !matches_include(&sig.market_title) || matches_exclude(&sig.market_title) { continue; }
+            if !matches_include(&sig.market_title) || matches_exclude(&sig.market_title) {
+                continue;
+            }
         }
         // Tighter price filter: skip near-resolved markets
         let sig_price: f64 = sig.price.parse().unwrap_or(0.0);
-        if sig_price < 0.05 || sig_price > 0.95 { continue; }
+        if sig_price < 0.05 || sig_price > 0.95 {
+            continue;
+        }
         // Min position size filter: skip small/test positions (<$200)
         let sig_size: f64 = sig.size.parse().unwrap_or(0.0);
-        if sig_size < 200.0 { continue; }
+        if sig_size < 200.0 {
+            continue;
+        }
         // Resolution horizon: only trade markets resolving within 14 days
-        if !market_within_horizon(&sig.market_title, 14) { continue; }
+        if !market_within_horizon(&sig.market_title, 14) {
+            continue;
+        }
 
-        let tag = sig.wallet_tag.as_deref().unwrap_or(&sig.wallet[..8.min(sig.wallet.len())]);
+        let tag = sig
+            .wallet_tag
+            .as_deref()
+            .unwrap_or(&sig.wallet[..8.min(sig.wallet.len())]);
         triggers.push(TriggerEvent {
             trigger_type: TriggerType::Signal,
             confidence: sig.confidence.clone(),
@@ -3417,8 +4118,12 @@ fn evaluate_triggers(
     // Check odds alerts
     if config.odds_threshold > 0.0 {
         for alert in odds_alerts {
-            if alert.change_pct.abs() < config.odds_threshold { continue; }
-            if !matches_include(&alert.label) || matches_exclude(&alert.label) { continue; }
+            if alert.change_pct.abs() < config.odds_threshold {
+                continue;
+            }
+            if !matches_include(&alert.label) || matches_exclude(&alert.label) {
+                continue;
+            }
 
             let dir = if alert.change_pct > 0.0 {
                 crate::smart::SignalDirection::Buy
@@ -3433,7 +4138,10 @@ fn evaluate_triggers(
                 direction: dir,
                 price: alert.current_price,
                 wallet_count: 0,
-                reason: format!("Odds moved {:+.1}% ({:.4} -> {:.4})", alert.change_pct, alert.previous_price, alert.current_price),
+                reason: format!(
+                    "Odds moved {:+.1}% ({:.4} -> {:.4})",
+                    alert.change_pct, alert.previous_price, alert.current_price
+                ),
                 condition_id: alert.token_id.clone(),
                 asset: alert.token_id.clone(),
                 signal_id: alert.id.clone(),
@@ -3466,8 +4174,9 @@ async fn cmd_monitor(
 
     // Build or load config
     let config = if load {
-        store::load_monitor_config()?
-            .ok_or_else(|| anyhow::anyhow!("No saved monitor config. Run with flags first, then --save."))?
+        store::load_monitor_config()?.ok_or_else(|| {
+            anyhow::anyhow!("No saved monitor config. Run with flags first, then --save.")
+        })?
     } else {
         let interval = parse_duration(interval_str)?;
         MonitorConfig {
@@ -3506,9 +4215,17 @@ async fn cmd_monitor(
     if config.odds_threshold > 0.0 {
         println!("  Odds threshold: {:.1}%", config.odds_threshold);
     }
-    println!("  Paper trade:    {} (${:.2}/trade, ${:.2}/day max, {} max/group)",
-        if config.paper_trade { "ON" } else { "OFF" }, config.amount, config.max_per_day, config.max_per_group);
-    println!("  Notifications:  {}", if config.notify { "ON" } else { "OFF" });
+    println!(
+        "  Paper trade:    {} (${:.2}/trade, ${:.2}/day max, {} max/group)",
+        if config.paper_trade { "ON" } else { "OFF" },
+        config.amount,
+        config.max_per_day,
+        config.max_per_group
+    );
+    println!(
+        "  Notifications:  {}",
+        if config.notify { "ON" } else { "OFF" }
+    );
     println!("  Press Ctrl+C to stop.\n");
 
     let mut cycle = 0u64;
@@ -3518,7 +4235,8 @@ async fn cmd_monitor(
     // Confirmation delay: queue triggers and wait before executing paper trades
     let confirm_secs = 600i64; // 10 minutes
     let mut pending_triggers: Vec<(crate::smart::TriggerEvent, chrono::DateTime<Utc>)> = Vec::new();
-    let mut cancelled_keys: std::collections::HashMap<(String, String), chrono::DateTime<Utc>> = std::collections::HashMap::new();
+    let mut cancelled_keys: std::collections::HashMap<(String, String), chrono::DateTime<Utc>> =
+        std::collections::HashMap::new();
 
     loop {
         tokio::select! {
@@ -3869,6 +4587,12 @@ async fn cmd_monitor(
                                 .copied()
                                 .unwrap_or(trigger.price);
 
+                            // Re-apply price filter: price may have drifted out of 0.15-0.80 during queue wait
+                            if current_price < 0.15 || current_price > 0.80 {
+                                eprintln!("  PRICE-DRIFT: {} now {:.4} (out of 0.15-0.80)", trigger.market_title, current_price);
+                                continue;
+                            }
+
                             let side_str = trigger.direction.to_string();
                             let pos_id = format!(
                                 "pos_{}_{}",
@@ -3954,7 +4678,10 @@ fn build_monitor_notification(triggers: &[crate::smart::TriggerEvent], paper_cou
     let mut lines = vec![format!("*PMCC Monitor: {} trigger(s)*", triggers.len())];
 
     for (i, t) in triggers.iter().enumerate() {
-        if i >= 5 { lines.push(format!("_...and {} more_", triggers.len() - 5)); break; }
+        if i >= 5 {
+            lines.push(format!("_...and {} more_", triggers.len() - 5));
+            break;
+        }
         let dir = &t.direction;
         lines.push(format!(
             "[{}] {} {} — {} [{}] @ {:.4}",
@@ -4011,13 +4738,18 @@ fn cmd_report() -> Result<()> {
     let mut total_invested = 0.0f64;
     let mut equity_points: Vec<(i64, f64)> = Vec::new(); // (timestamp_ms, cumulative_pnl)
     let mut cumulative_pnl = 0.0f64;
-    let mut market_stats: std::collections::HashMap<String, (f64, u32, u32)> = std::collections::HashMap::new(); // market -> (pnl, total, wins)
+    let mut market_stats: std::collections::HashMap<String, (f64, u32, u32)> =
+        std::collections::HashMap::new(); // market -> (pnl, total, wins)
 
     let trades: Vec<ReportTradeData> = follows
         .iter()
         .map(|r| {
             let entry = r.effective_entry();
-            let status_str = r.status.as_ref().map(|s| s.to_string()).unwrap_or_else(|| "OPEN".to_string());
+            let status_str = r
+                .status
+                .as_ref()
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "OPEN".to_string());
             let (pnl, current);
 
             if !r.is_open() {
@@ -4026,9 +4758,14 @@ fn cmd_report() -> Result<()> {
                 pnl = rpnl;
                 realized_pnl += rpnl;
                 closed_count += 1;
-                if rpnl > 0.0 { closed_wins += 1; }
+                if rpnl > 0.0 {
+                    closed_wins += 1;
+                }
             } else {
-                current = price_map.get(&(r.condition_id.clone(), r.outcome.clone())).copied().unwrap_or(entry);
+                current = price_map
+                    .get(&(r.condition_id.clone(), r.outcome.clone()))
+                    .copied()
+                    .unwrap_or(entry);
                 pnl = calc_open_pnl(&r.side, r.amount_usdc, entry, current);
                 unrealized_pnl += pnl;
             }
@@ -4037,15 +4774,27 @@ fn cmd_report() -> Result<()> {
             cumulative_pnl += pnl;
             equity_points.push((r.timestamp.timestamp_millis(), cumulative_pnl));
 
-            if pnl > best_pnl { best_pnl = pnl; }
-            if pnl < worst_pnl { worst_pnl = pnl; }
+            if pnl > best_pnl {
+                best_pnl = pnl;
+            }
+            if pnl < worst_pnl {
+                worst_pnl = pnl;
+            }
 
-            let stat = market_stats.entry(r.market_title.clone()).or_insert((0.0, 0, 0));
+            let stat = market_stats
+                .entry(r.market_title.clone())
+                .or_insert((0.0, 0, 0));
             stat.0 += pnl;
             stat.1 += 1;
-            if pnl > 0.0 { stat.2 += 1; }
+            if pnl > 0.0 {
+                stat.2 += 1;
+            }
 
-            let roi = if r.amount_usdc > 0.0 { pnl / r.amount_usdc * 100.0 } else { 0.0 };
+            let roi = if r.amount_usdc > 0.0 {
+                pnl / r.amount_usdc * 100.0
+            } else {
+                0.0
+            };
 
             ReportTradeData {
                 time: r.timestamp.format("%Y-%m-%d %H:%M").to_string(),
@@ -4066,34 +4815,65 @@ fn cmd_report() -> Result<()> {
 
     let total_pnl = realized_pnl + unrealized_pnl;
     let open_count = trades.len() as u32 - closed_count;
-    let win_rate = if closed_count > 0 { closed_wins as f64 / closed_count as f64 * 100.0 } else { 0.0 };
-    if best_pnl == f64::NEG_INFINITY { best_pnl = 0.0; }
-    if worst_pnl == f64::INFINITY { worst_pnl = 0.0; }
+    let win_rate = if closed_count > 0 {
+        closed_wins as f64 / closed_count as f64 * 100.0
+    } else {
+        0.0
+    };
+    if best_pnl == f64::NEG_INFINITY {
+        best_pnl = 0.0;
+    }
+    if worst_pnl == f64::INFINITY {
+        worst_pnl = 0.0;
+    }
 
     // Build equity curve SVG
     let equity_svg = build_equity_curve_svg(&equity_points);
 
     // Build trade scatter SVG
-    let scatter_data: Vec<(i64, f64, bool)> = trades.iter().map(|t| (t.timestamp_ms, t.pnl, t.pnl >= 0.0)).collect();
+    let scatter_data: Vec<(i64, f64, bool)> = trades
+        .iter()
+        .map(|t| (t.timestamp_ms, t.pnl, t.pnl >= 0.0))
+        .collect();
     let scatter_svg = build_trade_scatter_svg(&scatter_data);
 
     // Per-market breakdown
-    let mut market_rows: Vec<(String, f64, u32, u32)> = market_stats.into_iter().map(|(m, (p, t, w))| (m, p, t, w)).collect();
+    let mut market_rows: Vec<(String, f64, u32, u32)> = market_stats
+        .into_iter()
+        .map(|(m, (p, t, w))| (m, p, t, w))
+        .collect();
     market_rows.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
     let html = generate_report_html(
-        &wallets, &wallet_positions, &signals, &trades,
-        total_invested, total_pnl, realized_pnl, unrealized_pnl,
-        open_count, closed_count, win_rate, best_pnl, worst_pnl,
-        &equity_svg, &scatter_svg, &market_rows,
+        &wallets,
+        &wallet_positions,
+        &signals,
+        &trades,
+        total_invested,
+        total_pnl,
+        realized_pnl,
+        unrealized_pnl,
+        open_count,
+        closed_count,
+        win_rate,
+        best_pnl,
+        worst_pnl,
+        &equity_svg,
+        &scatter_svg,
+        &market_rows,
     );
 
     let report_path = dirs::home_dir()
         .ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?
-        .join(".config").join("polymarket").join("smart").join("dashboard.html");
+        .join(".config")
+        .join("polymarket")
+        .join("smart")
+        .join("dashboard.html");
     std::fs::write(&report_path, &html)?;
     println!("Dashboard generated: {}", report_path.display());
-    let _ = std::process::Command::new("open").arg(&report_path).output();
+    let _ = std::process::Command::new("open")
+        .arg(&report_path)
+        .output();
     Ok(())
 }
 
@@ -4109,7 +4889,9 @@ fn build_mini_sparkline(prices: &[f64], current: f64) -> String {
     let max_pts = 30;
     let sampled: Vec<f64> = if pts.len() > max_pts {
         let step = pts.len() as f64 / max_pts as f64;
-        (0..max_pts).map(|i| pts[(i as f64 * step) as usize]).collect()
+        (0..max_pts)
+            .map(|i| pts[(i as f64 * step) as usize])
+            .collect()
     } else {
         pts.clone()
     };
@@ -4133,15 +4915,23 @@ fn build_mini_sparkline(prices: &[f64], current: f64) -> String {
 
     let final_v = *sampled.last().unwrap();
     let first_v = sampled[0];
-    let color = if final_v >= first_v { "#4ade80" } else { "#f87171" };
+    let color = if final_v >= first_v {
+        "#4ade80"
+    } else {
+        "#f87171"
+    };
 
     format!(
         "<svg viewBox='0 0 {w} {h}' width='100' height='24' xmlns='http://www.w3.org/2000/svg' style='vertical-align:middle'>\
          <path d='{path}' fill='none' stroke='{color}' stroke-width='1.5'/>\
          <circle cx='{lx:.1}' cy='{ly:.1}' r='2' fill='{color}'/>\
          </svg>",
-        w = w, h = h, path = path, color = color,
-        lx = x(sampled.len() - 1), ly = y(final_v),
+        w = w,
+        h = h,
+        path = path,
+        color = color,
+        lx = x(sampled.len() - 1),
+        ly = y(final_v),
     )
 }
 
@@ -4158,8 +4948,16 @@ fn build_equity_curve_svg(points: &[(i64, f64)]) -> String {
     let max_t = points.last().unwrap().0 as f64;
     let t_range = (max_t - min_t).max(1.0);
 
-    let min_v = points.iter().map(|p| p.1).fold(f64::INFINITY, f64::min).min(0.0);
-    let max_v = points.iter().map(|p| p.1).fold(f64::NEG_INFINITY, f64::max).max(0.0);
+    let min_v = points
+        .iter()
+        .map(|p| p.1)
+        .fold(f64::INFINITY, f64::min)
+        .min(0.0);
+    let max_v = points
+        .iter()
+        .map(|p| p.1)
+        .fold(f64::NEG_INFINITY, f64::max)
+        .max(0.0);
     let v_range = (max_v - min_v).max(0.01);
 
     let x = |t: f64| -> f64 { pad + (t - min_t) / t_range * (w - pad * 2.0) };
@@ -4178,8 +4976,16 @@ fn build_equity_curve_svg(points: &[(i64, f64)]) -> String {
     let fill_path = format!("{path}L{last_x:.1},{zero_y:.1} L{first_x:.1},{zero_y:.1} Z");
 
     let final_pnl = points.last().unwrap().1;
-    let line_color = if final_pnl >= 0.0 { "#4ade80" } else { "#f87171" };
-    let fill_color = if final_pnl >= 0.0 { "#4ade8015" } else { "#f8717115" };
+    let line_color = if final_pnl >= 0.0 {
+        "#4ade80"
+    } else {
+        "#f87171"
+    };
+    let fill_color = if final_pnl >= 0.0 {
+        "#4ade8015"
+    } else {
+        "#f8717115"
+    };
 
     format!(
         r##"<svg viewBox="0 0 {w} {h}" xmlns="http://www.w3.org/2000/svg">
@@ -4192,7 +4998,9 @@ fn build_equity_curve_svg(points: &[(i64, f64)]) -> String {
 <text x="{lx:.1}" y="{ly:.1}" dy="-8" fill="{line_color}" font-size="11" text-anchor="end" font-weight="600">${pnl:+.2}</text>
 <text x="{pad}" y="16" fill="#94a3b8" font-size="11" font-weight="600">Cumulative P&amp;L</text>
 </svg>"##,
-        w = w, h = h, pad = pad,
+        w = w,
+        h = h,
+        pad = pad,
         zy = zero_y,
         we = w - pad,
         lx = x(points.last().unwrap().0 as f64),
@@ -4214,8 +5022,16 @@ fn build_trade_scatter_svg(points: &[(i64, f64, bool)]) -> String {
     let max_t = points.iter().map(|p| p.0).max().unwrap() as f64;
     let t_range = (max_t - min_t).max(1.0);
 
-    let min_v = points.iter().map(|p| p.1).fold(f64::INFINITY, f64::min).min(0.0);
-    let max_v = points.iter().map(|p| p.1).fold(f64::NEG_INFINITY, f64::max).max(0.0);
+    let min_v = points
+        .iter()
+        .map(|p| p.1)
+        .fold(f64::INFINITY, f64::min)
+        .min(0.0);
+    let max_v = points
+        .iter()
+        .map(|p| p.1)
+        .fold(f64::NEG_INFINITY, f64::max)
+        .max(0.0);
     let v_range = (max_v - min_v).max(0.01);
 
     let x = |t: f64| -> f64 { pad + (t - min_t) / t_range * (w - pad * 2.0) };
@@ -4228,7 +5044,8 @@ fn build_trade_scatter_svg(points: &[(i64, f64, bool)]) -> String {
         let r = (pnl.abs() / v_range * 20.0).clamp(3.0, 12.0);
         circles.push_str(&format!(
             r#"<circle cx="{:.1}" cy="{:.1}" r="{r:.1}" fill="{color}" opacity="0.7"/>"#,
-            x(t as f64), y(pnl)
+            x(t as f64),
+            y(pnl)
         ));
     }
 
@@ -4241,10 +5058,15 @@ fn build_trade_scatter_svg(points: &[(i64, f64, bool)]) -> String {
 <circle cx="{lx:.0}" cy="16" r="4" fill="#4ade80"/><text x="{lx2:.0}" y="20" fill="#64748b" font-size="9">Win</text>
 <circle cx="{rx:.0}" cy="16" r="4" fill="#f87171"/><text x="{rx2:.0}" y="20" fill="#64748b" font-size="9">Loss</text>
 </svg>"##,
-        w = w, h = h, pad = pad,
-        zy = zero_y, we = w - pad,
-        lx = w - 100.0, lx2 = w - 92.0,
-        rx = w - 60.0, rx2 = w - 52.0,
+        w = w,
+        h = h,
+        pad = pad,
+        zy = zero_y,
+        we = w - pad,
+        lx = w - 100.0,
+        lx2 = w - 92.0,
+        rx = w - 60.0,
+        rx2 = w - 52.0,
     )
 }
 
@@ -4269,10 +5091,26 @@ fn generate_report_html(
     scatter_svg: &str,
     market_rows: &[(String, f64, u32, u32)],
 ) -> String {
-    let pnl_color = if total_pnl >= 0.0 { "#4ade80" } else { "#f87171" };
-    let realized_color = if realized_pnl >= 0.0 { "#4ade80" } else { "#f87171" };
-    let unrealized_color = if unrealized_pnl >= 0.0 { "#4ade80" } else { "#f87171" };
-    let total_roi = if total_invested > 0.0 { total_pnl / total_invested * 100.0 } else { 0.0 };
+    let pnl_color = if total_pnl >= 0.0 {
+        "#4ade80"
+    } else {
+        "#f87171"
+    };
+    let realized_color = if realized_pnl >= 0.0 {
+        "#4ade80"
+    } else {
+        "#f87171"
+    };
+    let unrealized_color = if unrealized_pnl >= 0.0 {
+        "#4ade80"
+    } else {
+        "#f87171"
+    };
+    let total_roi = if total_invested > 0.0 {
+        total_pnl / total_invested * 100.0
+    } else {
+        0.0
+    };
 
     let wallets_html = wallets_to_html(wallets, wallet_positions);
     let signals_html = signals_to_html(signals);
@@ -4400,7 +5238,10 @@ struct ReportTradeData {
     roi: f64,
 }
 
-fn wallets_to_html(wallets: &[crate::smart::WatchedWallet], positions: &std::collections::HashMap<String, usize>) -> String {
+fn wallets_to_html(
+    wallets: &[crate::smart::WatchedWallet],
+    positions: &std::collections::HashMap<String, usize>,
+) -> String {
     if wallets.is_empty() {
         return r#"<p class="empty">No wallets being watched.</p>"#.to_string();
     }
@@ -4415,7 +5256,9 @@ fn wallets_to_html(wallets: &[crate::smart::WatchedWallet], positions: &std::col
             positions.get(&w.address).copied().unwrap_or(0)
         )
     }).collect();
-    format!("<table><thead><tr><th>Address</th><th>Tag</th><th>Score</th><th>Positions</th></tr></thead><tbody>{rows}</tbody></table>")
+    format!(
+        "<table><thead><tr><th>Address</th><th>Tag</th><th>Score</th><th>Positions</th></tr></thead><tbody>{rows}</tbody></table>"
+    )
 }
 
 fn signals_to_html(signals: &[Signal]) -> String {
@@ -4432,10 +5275,18 @@ fn signals_to_html(signals: &[Signal]) -> String {
             html_escape(&s.market_title), html_escape(&s.outcome), s.price
         )
     }).collect();
-    format!("<table><thead><tr><th>Time</th><th>Type</th><th>Conf</th><th>Market</th><th>Outcome</th><th>Price</th></tr></thead><tbody>{rows}</tbody></table>")
+    format!(
+        "<table><thead><tr><th>Time</th><th>Type</th><th>Conf</th><th>Market</th><th>Outcome</th><th>Price</th></tr></thead><tbody>{rows}</tbody></table>"
+    )
 }
 
-fn trades_to_html(trades: &[ReportTradeData], total_invested: f64, total_pnl: f64, total_roi: f64, pnl_color: &str) -> String {
+fn trades_to_html(
+    trades: &[ReportTradeData],
+    total_invested: f64,
+    total_pnl: f64,
+    total_roi: f64,
+    pnl_color: &str,
+) -> String {
     if trades.is_empty() {
         return r#"<p class="empty">No follow trades yet.</p>"#.to_string();
     }
@@ -4466,7 +5317,9 @@ fn market_to_html(market_rows: &[(String, f64, u32, u32)]) -> String {
             html_escape(&crate::output::truncate(market, 30))
         )
     }).collect();
-    format!("<table><thead><tr><th>Market</th><th>Trades</th><th>Win Rate</th><th>PnL</th></tr></thead><tbody>{rows}</tbody></table>")
+    format!(
+        "<table><thead><tr><th>Market</th><th>Trades</th><th>Win Rate</th><th>PnL</th></tr></thead><tbody>{rows}</tbody></table>"
+    )
 }
 
 // ── Telegram ────────────────────────────────────────────────────
@@ -4486,8 +5339,11 @@ async fn cmd_telegram(command: TelegramCommand, output: &OutputFormat) -> Result
             }
 
             let results = resp["result"].as_array();
-            let chat_id = results
-                .and_then(|arr| arr.iter().rev().find_map(|u| u["message"]["chat"]["id"].as_i64()));
+            let chat_id = results.and_then(|arr| {
+                arr.iter()
+                    .rev()
+                    .find_map(|u| u["message"]["chat"]["id"].as_i64())
+            });
 
             match chat_id {
                 Some(id) => {
@@ -4502,10 +5358,7 @@ async fn cmd_telegram(command: TelegramCommand, output: &OutputFormat) -> Result
                             println!("Run `polymarket smart telegram test` to verify.");
                         }
                         OutputFormat::Json => {
-                            println!(
-                                "{}",
-                                serde_json::json!({"ok": true, "chat_id": id})
-                            );
+                            println!("{}", serde_json::json!({"ok": true, "chat_id": id}));
                         }
                     }
                 }
@@ -4518,8 +5371,11 @@ async fn cmd_telegram(command: TelegramCommand, output: &OutputFormat) -> Result
             Ok(())
         }
         TelegramCommand::Test => {
-            let config = store::load_telegram_config()?
-                .ok_or_else(|| anyhow::anyhow!("Telegram not configured. Run `polymarket smart telegram setup <token>` first."))?;
+            let config = store::load_telegram_config()?.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Telegram not configured. Run `polymarket smart telegram setup <token>` first."
+                )
+            })?;
 
             send_telegram_message(&config, "Polymarket Smart Money — test notification").await?;
             match output {
@@ -4532,33 +5388,29 @@ async fn cmd_telegram(command: TelegramCommand, output: &OutputFormat) -> Result
         }
         TelegramCommand::Status => {
             match store::load_telegram_config()? {
-                Some(config) => {
-                    match output {
-                        OutputFormat::Table => {
-                            println!("Telegram: configured");
-                            println!("Chat ID:  {}", config.chat_id);
-                            let token_preview = config.bot_token.get(..10).unwrap_or(&config.bot_token);
-                            println!("Token:    {}...", token_preview);
-                        }
-                        OutputFormat::Json => {
-                            println!(
-                                "{}",
-                                serde_json::json!({
-                                    "configured": true,
-                                    "chat_id": config.chat_id,
-                                })
-                            );
-                        }
+                Some(config) => match output {
+                    OutputFormat::Table => {
+                        println!("Telegram: configured");
+                        println!("Chat ID:  {}", config.chat_id);
+                        let token_preview = config.bot_token.get(..10).unwrap_or(&config.bot_token);
+                        println!("Token:    {}...", token_preview);
                     }
-                }
-                None => {
-                    match output {
-                        OutputFormat::Table => println!("Telegram: not configured"),
-                        OutputFormat::Json => {
-                            println!("{}", serde_json::json!({"configured": false}));
-                        }
+                    OutputFormat::Json => {
+                        println!(
+                            "{}",
+                            serde_json::json!({
+                                "configured": true,
+                                "chat_id": config.chat_id,
+                            })
+                        );
                     }
-                }
+                },
+                None => match output {
+                    OutputFormat::Table => println!("Telegram: not configured"),
+                    OutputFormat::Json => {
+                        println!("{}", serde_json::json!({"configured": false}));
+                    }
+                },
             }
             Ok(())
         }
@@ -4567,7 +5419,11 @@ async fn cmd_telegram(command: TelegramCommand, output: &OutputFormat) -> Result
 
 /// Escape special chars for Telegram Markdown (v1).
 fn telegram_safe(s: &str) -> String {
-    s.replace('*', "").replace('_', " ").replace('`', "'").replace('[', "(").replace(']', ")")
+    s.replace('*', "")
+        .replace('_', " ")
+        .replace('`', "'")
+        .replace('[', "(")
+        .replace(']', ")")
 }
 
 async fn send_telegram_message(config: &TelegramConfig, text: &str) -> Result<()> {
@@ -4618,9 +5474,9 @@ fn build_telegram_text(signals: &[Signal], aggregated: &[AggregatedSignal]) -> S
         signals
             .iter()
             .filter(|s| {
-                !aggregated.iter().any(|a| {
-                    a.signals.iter().any(|as_| as_.id == s.id)
-                })
+                !aggregated
+                    .iter()
+                    .any(|a| a.signals.iter().any(|as_| as_.id == s.id))
             })
             .collect()
     };
@@ -4628,12 +5484,7 @@ fn build_telegram_text(signals: &[Signal], aggregated: &[AggregatedSignal]) -> S
     for sig in remaining.iter().take(5) {
         lines.push(format!(
             "{} {} `{}` [{}] size:{} @{}",
-            sig.signal_type,
-            sig.confidence,
-            sig.market_title,
-            sig.outcome,
-            sig.size,
-            sig.price,
+            sig.signal_type, sig.confidence, sig.market_title, sig.outcome, sig.size, sig.price,
         ));
     }
 
@@ -4647,7 +5498,9 @@ fn build_telegram_text(signals: &[Signal], aggregated: &[AggregatedSignal]) -> S
 // ── Notifications ───────────────────────────────────────────────
 
 fn send_macos_notification(signals: &[Signal], aggregated: &[AggregatedSignal]) {
-    if signals.is_empty() { return; }
+    if signals.is_empty() {
+        return;
+    }
     let title = format!("Polymarket: {} signal(s) detected", signals.len());
     let body = if let Some(agg) = aggregated.first() {
         format!(
@@ -4666,9 +5519,8 @@ fn send_macos_notification(signals: &[Signal], aggregated: &[AggregatedSignal]) 
     let title = osascript_safe(&title);
     let body = osascript_safe(&body);
 
-    let script = format!(
-        r#"display notification "{body}" with title "{title}" sound name "Glass""#
-    );
+    let script =
+        format!(r#"display notification "{body}" with title "{title}" sound name "Glass""#);
     let _ = std::process::Command::new("osascript")
         .arg("-e")
         .arg(&script)
@@ -4701,7 +5553,8 @@ async fn cmd_odds(command: OddsCommand, output: &OutputFormat) -> Result<()> {
                 anyhow::bail!("Could not fetch midpoint for token {token_id} (got {mid})");
             }
 
-            let label = label.unwrap_or_else(|| format!("token:{}", &token_id[..token_id.len().min(12)]));
+            let label =
+                label.unwrap_or_else(|| format!("token:{}", &token_id[..token_id.len().min(12)]));
             let watch = OddsWatch {
                 token_id: token_id.clone(),
                 label: label.clone(),
@@ -4769,7 +5622,10 @@ fn send_odds_macos_notification(alerts: &[super::super::smart::OddsAlert]) {
         let dir = if a.change_pct > 0.0 { "↑" } else { "↓" };
         format!(
             "{} {dir}{:.1}% ({:.2} → {:.2})",
-            a.label, a.change_pct.abs(), a.previous_price, a.current_price
+            a.label,
+            a.change_pct.abs(),
+            a.previous_price,
+            a.current_price
         )
     } else {
         return;
@@ -4777,9 +5633,8 @@ fn send_odds_macos_notification(alerts: &[super::super::smart::OddsAlert]) {
 
     let title = osascript_safe(&title);
     let body = osascript_safe(&body);
-    let script = format!(
-        r#"display notification "{body}" with title "{title}" sound name "Glass""#
-    );
+    let script =
+        format!(r#"display notification "{body}" with title "{title}" sound name "Glass""#);
     let _ = std::process::Command::new("osascript")
         .arg("-e")
         .arg(&script)
@@ -4789,13 +5644,14 @@ fn send_odds_macos_notification(alerts: &[super::super::smart::OddsAlert]) {
 fn build_odds_telegram_text(alerts: &[super::super::smart::OddsAlert]) -> String {
     let mut lines = vec![format!("*Polymarket: {} odds alert(s)*", alerts.len())];
     for alert in alerts.iter().take(10) {
-        let dir = if alert.change_pct > 0.0 { "📈" } else { "📉" };
+        let dir = if alert.change_pct > 0.0 {
+            "📈"
+        } else {
+            "📉"
+        };
         lines.push(format!(
             "{dir} `{}` {:.1}% ({:.4} → {:.4})",
-            alert.label,
-            alert.change_pct,
-            alert.previous_price,
-            alert.current_price,
+            alert.label, alert.change_pct, alert.previous_price, alert.current_price,
         ));
     }
     if alerts.len() > 10 {
@@ -4837,8 +5693,14 @@ async fn cmd_crypto(
             notify,
         } => {
             cmd_crypto_monitor(
-                gamma_client, &asset, amount, max_per_hour, max_per_day,
-                min_confidence, notify, output,
+                gamma_client,
+                &asset,
+                amount,
+                max_per_hour,
+                max_per_day,
+                min_confidence,
+                notify,
+                output,
             )
             .await
         }
@@ -4850,26 +5712,28 @@ async fn cmd_crypto_feed(asset_str: &str, output: &OutputFormat) -> Result<()> {
     let asset: crypto::CryptoAsset = asset_str.parse()?;
     let feed = crypto::feed::BinanceFeed::new();
 
-    let (candles, depth, trades) =
-        tokio::join!(
-            feed.fetch_klines(asset, "1m", 30),
-            feed.fetch_depth(asset, 20),
-            feed.fetch_trades(asset, 100),
-        );
+    let (candles, depth, trades) = tokio::join!(
+        feed.fetch_klines(asset, "1m", 30),
+        feed.fetch_depth(asset, 20),
+        feed.fetch_trades(asset, 100),
+    );
     let candles = candles?;
     let depth = depth?;
     let trades = trades?;
 
     match output {
         OutputFormat::Json => {
-            println!("{}", serde_json::json!({
-                "asset": asset.to_string(),
-                "candles": candles.len(),
-                "last_price": candles.last().map(|c| c.close),
-                "bid_levels": depth.bids.len(),
-                "ask_levels": depth.asks.len(),
-                "recent_trades": trades.len(),
-            }));
+            println!(
+                "{}",
+                serde_json::json!({
+                    "asset": asset.to_string(),
+                    "candles": candles.len(),
+                    "last_price": candles.last().map(|c| c.close),
+                    "bid_levels": depth.bids.len(),
+                    "ask_levels": depth.asks.len(),
+                    "recent_trades": trades.len(),
+                })
+            );
         }
         _ => {
             let last = candles.last();
@@ -4923,9 +5787,17 @@ async fn cmd_crypto_feed(asset_str: &str, output: &OutputFormat) -> Result<()> {
                 "Trades: {} recent | buy ${:.0} ({:.0}%) | sell ${:.0} ({:.0}%)",
                 trades.len(),
                 buy_vol,
-                if total > 0.0 { buy_vol / total * 100.0 } else { 0.0 },
+                if total > 0.0 {
+                    buy_vol / total * 100.0
+                } else {
+                    0.0
+                },
                 sell_vol,
-                if total > 0.0 { sell_vol / total * 100.0 } else { 0.0 },
+                if total > 0.0 {
+                    sell_vol / total * 100.0
+                } else {
+                    0.0
+                },
             );
 
             // Last 5 candles
@@ -4937,9 +5809,14 @@ async fn cmd_crypto_feed(asset_str: &str, output: &OutputFormat) -> Result<()> {
                 let dir = if c.close >= c.open { "+" } else { "-" };
                 println!(
                     "  {} {}{:.2}  O:{:.2} H:{:.2} L:{:.2} C:{:.2} V:{:.2}",
-                    ts, dir,
+                    ts,
+                    dir,
                     (c.close - c.open).abs(),
-                    c.open, c.high, c.low, c.close, c.volume
+                    c.open,
+                    c.high,
+                    c.low,
+                    c.close,
+                    c.volume
                 );
             }
         }
@@ -4959,23 +5836,41 @@ async fn cmd_crypto_signal(asset_str: &str, output: &OutputFormat) -> Result<()>
     let (candles_res, agg_spot, agg_futures) = tokio::join!(
         feed.fetch_klines(asset, "1m", 30),
         crypto::feed::fetch_aggregated_spot(&feed, &okx_feed, &hl_feed, &bybit_feed, asset),
-        crypto::feed::fetch_aggregated_futures(&futures_feed, &okx_feed, &hl_feed, &bybit_feed, asset),
+        crypto::feed::fetch_aggregated_futures(
+            &futures_feed,
+            &okx_feed,
+            &hl_feed,
+            &bybit_feed,
+            asset
+        ),
     );
     let candles = candles_res?;
 
     // Use Binance order book as primary (first in aggregated list), fallback to empty
-    let binance_ob = agg_spot.orderbooks.iter()
+    let binance_ob = agg_spot
+        .orderbooks
+        .iter()
         .find(|(name, _)| name == "binance")
         .map(|(_, ob)| ob.clone())
-        .unwrap_or(crypto::OrderBook { bids: vec![], asks: vec![], timestamp: 0 });
-    let binance_trades = agg_spot.trades.iter()
+        .unwrap_or(crypto::OrderBook {
+            bids: vec![],
+            asks: vec![],
+            timestamp: 0,
+        });
+    let binance_trades = agg_spot
+        .trades
+        .iter()
         .find(|(name, _)| name == "binance")
         .map(|(_, tr)| tr.clone())
         .unwrap_or_default();
 
     let signal = crypto::momentum::compute_signal_full(
-        asset, &candles, &binance_ob, &binance_trades,
-        Some(&agg_futures), Some(&agg_spot),
+        asset,
+        &candles,
+        &binance_ob,
+        &binance_trades,
+        Some(&agg_futures),
+        Some(&agg_spot),
     );
 
     let futures_data = Some(agg_futures);
@@ -4987,11 +5882,18 @@ async fn cmd_crypto_signal(asset_str: &str, output: &OutputFormat) -> Result<()>
         _ => {
             let c = &signal.components;
             if agg_spot.exchange_count >= 2 {
-                println!("--- {} Multi-Exchange Signal ({} exchanges + futures) ---", asset, agg_spot.exchange_count);
+                println!(
+                    "--- {} Multi-Exchange Signal ({} exchanges + futures) ---",
+                    asset, agg_spot.exchange_count
+                );
             } else {
                 println!("--- {} Enhanced Signal (spot + futures) ---", asset);
             }
-            println!("Direction: {}  (confidence: {:.0}%)", signal.direction, signal.confidence * 100.0);
+            println!(
+                "Direction: {}  (confidence: {:.0}%)",
+                signal.direction,
+                signal.confidence * 100.0
+            );
             println!("Price: ${:.2}", signal.price);
             println!();
             println!("Spot components:");
@@ -5010,11 +5912,25 @@ async fn cmd_crypto_signal(asset_str: &str, output: &OutputFormat) -> Result<()>
                 if let Some(ref fd) = futures_data {
                     println!();
                     println!("Futures raw data:");
-                    println!("  Funding rate:  {:.6} ({:.4}%)", fd.funding_rate, fd.funding_rate * 100.0);
+                    println!(
+                        "  Funding rate:  {:.6} ({:.4}%)",
+                        fd.funding_rate,
+                        fd.funding_rate * 100.0
+                    );
                     println!("  Mark price:    ${:.2}", fd.mark_price);
-                    println!("  Open interest: ${:.0}M", fd.open_interest_usd / 1_000_000.0);
-                    println!("  Liquidations:  {} (last 5m)", fd.liquidations.iter()
-                        .filter(|l| l.time > chrono::Utc::now().timestamp_millis() - 5 * 60 * 1000).count());
+                    println!(
+                        "  Open interest: ${:.0}M",
+                        fd.open_interest_usd / 1_000_000.0
+                    );
+                    println!(
+                        "  Liquidations:  {} (last 5m)",
+                        fd.liquidations
+                            .iter()
+                            .filter(
+                                |l| l.time > chrono::Utc::now().timestamp_millis() - 5 * 60 * 1000
+                            )
+                            .count()
+                    );
                 }
             }
             println!();
@@ -5034,35 +5950,33 @@ async fn cmd_crypto_market(
     let market = crypto::market::find_next_5m_market(gamma_client, asset).await?;
 
     match market {
-        Some(m) => {
-            match output {
-                OutputFormat::Json => {
-                    println!("{}", serde_json::to_string_pretty(&m)?);
-                }
-                _ => {
-                    let start = chrono::DateTime::from_timestamp_millis(m.start_time)
-                        .map(|dt| dt.format("%H:%M:%S UTC").to_string())
-                        .unwrap_or_default();
-                    let end = chrono::DateTime::from_timestamp_millis(m.end_time)
-                        .map(|dt| dt.format("%H:%M:%S UTC").to_string())
-                        .unwrap_or_default();
-                    let now = chrono::Utc::now().timestamp_millis();
-                    let until = (m.start_time - now) / 1000;
-
-                    println!("--- Next {} 5m Market ---", asset);
-                    println!("Q: {}", m.question);
-                    println!("Window: {} - {}", start, end);
-                    if until > 0 {
-                        println!("Starts in: {}m {}s", until / 60, until % 60);
-                    } else {
-                        println!("Status: IN PROGRESS");
-                    }
-                    println!("Token UP:   {}", m.token_id_up);
-                    println!("Token DOWN: {}", m.token_id_down);
-                    println!("Slug: {}", m.slug);
-                }
+        Some(m) => match output {
+            OutputFormat::Json => {
+                println!("{}", serde_json::to_string_pretty(&m)?);
             }
-        }
+            _ => {
+                let start = chrono::DateTime::from_timestamp_millis(m.start_time)
+                    .map(|dt| dt.format("%H:%M:%S UTC").to_string())
+                    .unwrap_or_default();
+                let end = chrono::DateTime::from_timestamp_millis(m.end_time)
+                    .map(|dt| dt.format("%H:%M:%S UTC").to_string())
+                    .unwrap_or_default();
+                let now = chrono::Utc::now().timestamp_millis();
+                let until = (m.start_time - now) / 1000;
+
+                println!("--- Next {} 5m Market ---", asset);
+                println!("Q: {}", m.question);
+                println!("Window: {} - {}", start, end);
+                if until > 0 {
+                    println!("Starts in: {}m {}s", until / 60, until % 60);
+                } else {
+                    println!("Status: IN PROGRESS");
+                }
+                println!("Token UP:   {}", m.token_id_up);
+                println!("Token DOWN: {}", m.token_id_down);
+                println!("Slug: {}", m.slug);
+            }
+        },
         None => {
             println!("No upcoming {} 5-minute market found", asset);
         }
@@ -5085,21 +5999,25 @@ async fn cmd_crypto_backtest(asset_str: &str, hours: u32, output: &OutputFormat)
 
     match output {
         OutputFormat::Json => {
-            println!("{}", serde_json::json!({
-                "asset": asset.to_string(),
-                "candles": candles.len(),
-                "total_windows": result.total_windows,
-                "signals_generated": result.signals_generated,
-                "correct": result.correct,
-                "wrong": result.wrong,
-                "win_rate": format!("{:.1}%", result.win_rate * 100.0),
-                "skip_rate": format!("{:.1}%", result.skip_rate * 100.0),
-            }));
+            println!(
+                "{}",
+                serde_json::json!({
+                    "asset": asset.to_string(),
+                    "candles": candles.len(),
+                    "total_windows": result.total_windows,
+                    "signals_generated": result.signals_generated,
+                    "correct": result.correct,
+                    "wrong": result.wrong,
+                    "win_rate": format!("{:.1}%", result.win_rate * 100.0),
+                    "skip_rate": format!("{:.1}%", result.skip_rate * 100.0),
+                })
+            );
         }
         _ => {
             println!("\n--- {} Backtest Results ({}h) ---", asset, hours);
             println!("Total 5m windows:   {}", result.total_windows);
-            println!("Signals generated:  {} ({:.0}% of windows)",
+            println!(
+                "Signals generated:  {} ({:.0}% of windows)",
                 result.signals_generated,
                 (1.0 - result.skip_rate) * 100.0
             );
@@ -5117,25 +6035,50 @@ async fn cmd_crypto_backtest(asset_str: &str, hours: u32, output: &OutputFormat)
                     let mark = if entry.correct { "OK" } else { "XX" };
                     println!(
                         "  {} [{}] pred={} actual={} conf={:.0}% open={:.2} close={:.2}",
-                        ts, mark, entry.predicted, entry.actual,
+                        ts,
+                        mark,
+                        entry.predicted,
+                        entry.actual,
                         entry.confidence * 100.0,
-                        entry.window_open, entry.window_close,
+                        entry.window_open,
+                        entry.window_close,
                     );
                 }
 
                 // Win rate by confidence bucket
-                let high: Vec<_> = result.details.iter().filter(|e| e.confidence >= 0.7).collect();
-                let med: Vec<_> = result.details.iter().filter(|e| e.confidence >= 0.3 && e.confidence < 0.7).collect();
-                let low: Vec<_> = result.details.iter().filter(|e| e.confidence < 0.3).collect();
+                let high: Vec<_> = result
+                    .details
+                    .iter()
+                    .filter(|e| e.confidence >= 0.7)
+                    .collect();
+                let med: Vec<_> = result
+                    .details
+                    .iter()
+                    .filter(|e| e.confidence >= 0.3 && e.confidence < 0.7)
+                    .collect();
+                let low: Vec<_> = result
+                    .details
+                    .iter()
+                    .filter(|e| e.confidence < 0.3)
+                    .collect();
 
                 println!("\nWin rate by confidence:");
-                for (label, bucket) in [("High (70%+)", &high), ("Med (30-70%)", &med), ("Low (<30%)", &low)] {
+                for (label, bucket) in [
+                    ("High (70%+)", &high),
+                    ("Med (30-70%)", &med),
+                    ("Low (<30%)", &low),
+                ] {
                     if bucket.is_empty() {
                         println!("  {}: no signals", label);
                     } else {
                         let correct = bucket.iter().filter(|e| e.correct).count();
-                        println!("  {}: {}/{} ({:.1}%)", label, correct, bucket.len(),
-                            correct as f64 / bucket.len() as f64 * 100.0);
+                        println!(
+                            "  {}: {}/{} ({:.1}%)",
+                            label,
+                            correct,
+                            bucket.len(),
+                            correct as f64 / bucket.len() as f64 * 100.0
+                        );
                     }
                 }
             }
@@ -5170,7 +6113,14 @@ async fn cmd_crypto_monitor(
     let bybit_feed = crypto::feed::BybitFeed::new();
 
     println!("=== Crypto 5m Monitor (Multi-Exchange) ===");
-    println!("  Assets:         {}", assets.iter().map(|a| a.to_string()).collect::<Vec<_>>().join(", "));
+    println!(
+        "  Assets:         {}",
+        assets
+            .iter()
+            .map(|a| a.to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
     println!("  Signal:         7-component (Binance+OKX+Hyperliquid+Bybit + futures)");
     println!("  Amount:         ${:.2}/trade", amount);
     println!("  Max/hour:       {}", max_per_hour);
@@ -5369,7 +6319,9 @@ async fn resolve_crypto_positions(feed: &crypto::feed::BinanceFeed) -> u32 {
     let mut changed = false;
 
     for r in &mut records {
-        if !r.is_open() { continue; }
+        if !r.is_open() {
+            continue;
+        }
         let reason = match &r.entry_reason {
             Some(e) if e.starts_with("crypto:momentum:") => e.clone(),
             _ => continue,
@@ -5389,7 +6341,9 @@ async fn resolve_crypto_positions(feed: &crypto::feed::BinanceFeed) -> u32 {
             None => r.timestamp.timestamp_millis() + 10 * 60 * 1000,
         };
 
-        if now_ms < end_time + 30_000 { continue; }
+        if now_ms < end_time + 30_000 {
+            continue;
+        }
 
         // Fetch recent candles to determine actual direction
         let candles = match feed.fetch_klines(asset, "1m", 10).await {
@@ -5398,7 +6352,8 @@ async fn resolve_crypto_positions(feed: &crypto::feed::BinanceFeed) -> u32 {
         };
 
         let window_start = end_time - 5 * 60 * 1000;
-        let window_candles: Vec<_> = candles.iter()
+        let window_candles: Vec<_> = candles
+            .iter()
             .filter(|c| c.open_time >= window_start - 60_000 && c.close_time <= end_time + 60_000)
             .collect();
 
@@ -5413,7 +6368,11 @@ async fn resolve_crypto_positions(feed: &crypto::feed::BinanceFeed) -> u32 {
 
         let open_price = window_candles.first().map(|c| c.open).unwrap_or(0.0);
         let close_price = window_candles.last().map(|c| c.close).unwrap_or(0.0);
-        let actual_dir = if close_price > open_price { "Up" } else { "Down" };
+        let actual_dir = if close_price > open_price {
+            "Up"
+        } else {
+            "Down"
+        };
         let won = r.outcome == actual_dir;
 
         if won {
@@ -5424,14 +6383,24 @@ async fn resolve_crypto_positions(feed: &crypto::feed::BinanceFeed) -> u32 {
             r.realized_pnl = Some(r.amount_usdc * (0.05 / 0.50 - 1.0));
         }
 
-        let move_pct = if open_price > 0.0 { (close_price - open_price) / open_price * 100.0 } else { 0.0 };
+        let move_pct = if open_price > 0.0 {
+            (close_price - open_price) / open_price * 100.0
+        } else {
+            0.0
+        };
         r.status = Some(crate::smart::TradeStatus::Closed);
         r.closed_at = Some(Utc::now());
-        r.exit_reason = Some(format!("5m-resolved: actual={actual_dir} {open_price:.2}->{close_price:.2} ({move_pct:+.3}%) {}",
-            if won { "WIN" } else { "LOSS" }));
-        eprintln!("  RESOLVED: {} pred={} actual={actual_dir} {open_price:.2}->{close_price:.2} ({move_pct:+.3}%) {} | {}",
-            r.market_title, r.outcome, if won { "WIN" } else { "LOSS" },
-            r.entry_reason.as_deref().unwrap_or(""));
+        r.exit_reason = Some(format!(
+            "5m-resolved: actual={actual_dir} {open_price:.2}->{close_price:.2} ({move_pct:+.3}%) {}",
+            if won { "WIN" } else { "LOSS" }
+        ));
+        eprintln!(
+            "  RESOLVED: {} pred={} actual={actual_dir} {open_price:.2}->{close_price:.2} ({move_pct:+.3}%) {} | {}",
+            r.market_title,
+            r.outcome,
+            if won { "WIN" } else { "LOSS" },
+            r.entry_reason.as_deref().unwrap_or("")
+        );
         changed = true;
         resolved += 1;
     }
@@ -5452,7 +6421,9 @@ fn parse_crypto_end_time(title: &str) -> Option<i64> {
     let date_str = time_part[..comma_pos].trim();
     let time_range = time_part[comma_pos + 1..].trim().replace(' ', "");
     let parts: Vec<&str> = time_range.splitn(2, '-').collect();
-    if parts.len() != 2 { return None; }
+    if parts.len() != 2 {
+        return None;
+    }
 
     use chrono::Datelike;
     let year = chrono::Utc::now().year();
@@ -5461,18 +6432,32 @@ fn parse_crypto_end_time(title: &str) -> Option<i64> {
     let is_pm = time_upper.contains("PM");
     let digits = time_upper.trim_end_matches("AM").trim_end_matches("PM");
     let tp: Vec<&str> = digits.split(':').collect();
-    if tp.len() != 2 { return None; }
+    if tp.len() != 2 {
+        return None;
+    }
     let mut hour: u32 = tp[0].parse().ok()?;
     let min: u32 = tp[1].parse().ok()?;
-    if hour == 12 { hour = if is_pm { 12 } else { 0 }; } else if is_pm { hour += 12; }
+    if hour == 12 {
+        hour = if is_pm { 12 } else { 0 };
+    } else if is_pm {
+        hour += 12;
+    }
 
     let month_str = date_str.split_whitespace().next()?;
     let day_str = date_str.split_whitespace().nth(1)?;
     let month = match month_str.to_lowercase().as_str() {
-        "january" | "jan" => 1u32, "february" | "feb" => 2, "march" | "mar" => 3,
-        "april" | "apr" => 4, "may" => 5, "june" | "jun" => 6,
-        "july" | "jul" => 7, "august" | "aug" => 8, "september" | "sep" => 9,
-        "october" | "oct" => 10, "november" | "nov" => 11, "december" | "dec" => 12,
+        "january" | "jan" => 1u32,
+        "february" | "feb" => 2,
+        "march" | "mar" => 3,
+        "april" | "apr" => 4,
+        "may" => 5,
+        "june" | "jun" => 6,
+        "july" | "jul" => 7,
+        "august" | "aug" => 8,
+        "september" | "sep" => 9,
+        "october" | "oct" => 10,
+        "november" | "nov" => 11,
+        "december" | "dec" => 12,
         _ => return None,
     };
     let day: u32 = day_str.parse().ok()?;
@@ -5485,7 +6470,9 @@ fn parse_crypto_end_time(title: &str) -> Option<i64> {
     } else {
         chrono::FixedOffset::west_opt(5 * 3600)?
     };
-    let et_dt = et_offset.from_local_datetime(&date.and_time(time)).single()?;
+    let et_dt = et_offset
+        .from_local_datetime(&date.and_time(time))
+        .single()?;
     Some(et_dt.timestamp_millis())
 }
 
@@ -5493,18 +6480,30 @@ fn parse_crypto_end_time(title: &str) -> Option<i64> {
 fn crypto_daily_spend() -> f64 {
     let records = store::load_follow_records().unwrap_or_default();
     let today = Utc::now().date_naive();
-    records.iter()
-        .filter(|r| r.entry_reason.as_deref().map(|e| e.starts_with("crypto:")).unwrap_or(false)
-            && r.timestamp.date_naive() == today
-            && !matches!(r.status.as_ref(), Some(crate::smart::TradeStatus::Expired)))
+    records
+        .iter()
+        .filter(|r| {
+            r.entry_reason
+                .as_deref()
+                .map(|e| e.starts_with("crypto:"))
+                .unwrap_or(false)
+                && r.timestamp.date_naive() == today
+                && !matches!(r.status.as_ref(), Some(crate::smart::TradeStatus::Expired))
+        })
         .map(|r| r.amount_usdc)
         .sum()
 }
 
 fn cmd_crypto_status(output: &OutputFormat) -> Result<()> {
     let records = store::load_follow_records().unwrap_or_default();
-    let crypto_trades: Vec<&FollowRecord> = records.iter()
-        .filter(|r| r.entry_reason.as_deref().map(|e| e.starts_with("crypto:")).unwrap_or(false))
+    let crypto_trades: Vec<&FollowRecord> = records
+        .iter()
+        .filter(|r| {
+            r.entry_reason
+                .as_deref()
+                .map(|e| e.starts_with("crypto:"))
+                .unwrap_or(false)
+        })
         .collect();
 
     if crypto_trades.is_empty() {
@@ -5514,40 +6513,68 @@ fn cmd_crypto_status(output: &OutputFormat) -> Result<()> {
 
     let open: Vec<_> = crypto_trades.iter().filter(|r| r.is_open()).collect();
     let closed: Vec<_> = crypto_trades.iter().filter(|r| !r.is_open()).collect();
-    let wins = closed.iter().filter(|r| r.realized_pnl.unwrap_or(0.0) > 0.0).count();
+    let wins = closed
+        .iter()
+        .filter(|r| r.realized_pnl.unwrap_or(0.0) > 0.0)
+        .count();
     let losses = closed.len() - wins;
     let total_pnl: f64 = closed.iter().map(|r| r.realized_pnl.unwrap_or(0.0)).sum();
     let total_spent: f64 = crypto_trades.iter().map(|r| r.amount_usdc).sum();
-    let win_rate = if !closed.is_empty() { wins as f64 / closed.len() as f64 * 100.0 } else { 0.0 };
+    let win_rate = if !closed.is_empty() {
+        wins as f64 / closed.len() as f64 * 100.0
+    } else {
+        0.0
+    };
 
     match output {
         OutputFormat::Json => {
-            println!("{}", serde_json::json!({
-                "total_trades": crypto_trades.len(),
-                "open": open.len(),
-                "closed": closed.len(),
-                "wins": wins,
-                "losses": losses,
-                "win_rate": format!("{:.1}%", win_rate),
-                "total_pnl": format!("${:.2}", total_pnl),
-                "total_spent": format!("${:.2}", total_spent),
-            }));
+            println!(
+                "{}",
+                serde_json::json!({
+                    "total_trades": crypto_trades.len(),
+                    "open": open.len(),
+                    "closed": closed.len(),
+                    "wins": wins,
+                    "losses": losses,
+                    "win_rate": format!("{:.1}%", win_rate),
+                    "total_pnl": format!("${:.2}", total_pnl),
+                    "total_spent": format!("${:.2}", total_spent),
+                })
+            );
         }
         _ => {
             println!("--- Crypto 5m Paper Trading ---");
-            println!("Total: {}  (open: {}, closed: {})", crypto_trades.len(), open.len(), closed.len());
+            println!(
+                "Total: {}  (open: {}, closed: {})",
+                crypto_trades.len(),
+                open.len(),
+                closed.len()
+            );
             println!("W/L: {}/{} ({:.1}%)", wins, losses, win_rate);
-            println!("PnL: ${:.2}  Spent: ${:.2}  ROI: {:.1}%",
-                total_pnl, total_spent,
-                if total_spent > 0.0 { total_pnl / total_spent * 100.0 } else { 0.0 });
+            println!(
+                "PnL: ${:.2}  Spent: ${:.2}  ROI: {:.1}%",
+                total_pnl,
+                total_spent,
+                if total_spent > 0.0 {
+                    total_pnl / total_spent * 100.0
+                } else {
+                    0.0
+                }
+            );
 
             if !open.is_empty() {
                 println!("\nOpen:");
                 for r in &open {
                     let age = (Utc::now() - r.timestamp).num_seconds();
-                    println!("  {} {} @ {:.2} ${:.2} ({}s) | {}",
-                        r.outcome, r.market_title, r.price, r.amount_usdc, age,
-                        r.entry_reason.as_deref().unwrap_or("?"));
+                    println!(
+                        "  {} {} @ {:.2} ${:.2} ({}s) | {}",
+                        r.outcome,
+                        r.market_title,
+                        r.price,
+                        r.amount_usdc,
+                        age,
+                        r.entry_reason.as_deref().unwrap_or("?")
+                    );
                 }
             }
 
@@ -5555,9 +6582,13 @@ fn cmd_crypto_status(output: &OutputFormat) -> Result<()> {
                 println!("\nLast 10:");
                 for r in closed.iter().rev().take(10) {
                     let pnl = r.realized_pnl.unwrap_or(0.0);
-                    println!("  {} {:+.2} | {} | {}",
-                        r.outcome, pnl, r.market_title,
-                        r.exit_reason.as_deref().unwrap_or("?"));
+                    println!(
+                        "  {} {:+.2} | {} | {}",
+                        r.outcome,
+                        pnl,
+                        r.market_title,
+                        r.exit_reason.as_deref().unwrap_or("?")
+                    );
                 }
             }
         }

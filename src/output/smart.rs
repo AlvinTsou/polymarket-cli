@@ -76,9 +76,7 @@ pub fn print_wallet_list(wallets: &[WatchedWallet], output: &OutputFormat) -> Re
                 .map(|w| Row {
                     address: truncate(&w.address, 14),
                     tag: w.tag.as_deref().unwrap_or("—").to_string(),
-                    score: w
-                        .score
-                        .map_or("—".into(), |s| format!("{s:.1}")),
+                    score: w.score.map_or("—".into(), |s| format!("{s:.1}")),
                     added: w.added_at.format("%Y-%m-%d").to_string(),
                 })
                 .collect();
@@ -144,10 +142,7 @@ pub fn print_scan_result(
                 if summary.change_details.is_empty() {
                     continue;
                 }
-                println!(
-                    "\n[{}] Changes:",
-                    truncate(&summary.address, 14)
-                );
+                println!("\n[{}] Changes:", truncate(&summary.address, 14));
                 for change in &summary.change_details {
                     let arrow = match change.change_type {
                         ChangeType::New => "+  NEW",
@@ -305,10 +300,7 @@ pub fn print_profile(score: &SmartScore, is_watched: bool, output: &OutputFormat
             println!("Portfolio:      {}", format_money(&score.volume));
             println!("Positions:      {}", score.positions_count);
             println!("Markets traded: {}", score.markets_traded);
-            println!(
-                "Watched:        {}",
-                if is_watched { "Yes" } else { "No" }
-            );
+            println!("Watched:        {}", if is_watched { "Yes" } else { "No" });
         }
         OutputFormat::Json => {
             let data = json!({

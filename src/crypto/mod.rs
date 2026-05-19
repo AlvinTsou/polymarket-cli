@@ -53,13 +53,13 @@ impl std::str::FromStr for CryptoAsset {
 /// OHLCV candle from Binance klines.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Candle {
-    pub open_time: i64,   // ms timestamp
+    pub open_time: i64, // ms timestamp
     pub open: f64,
     pub high: f64,
     pub low: f64,
     pub close: f64,
     pub volume: f64,
-    pub close_time: i64,  // ms timestamp
+    pub close_time: i64, // ms timestamp
 }
 
 /// Single level in the order book.
@@ -122,16 +122,16 @@ pub struct SignalComponents {
 /// Futures data from Binance FAPI (funding, OI, liquidations).
 #[derive(Clone, Debug)]
 pub struct FuturesData {
-    pub funding_rate: f64,        // current funding rate (8h period)
+    pub funding_rate: f64, // current funding rate (8h period)
     pub mark_price: f64,
-    pub open_interest_usd: f64,   // total OI in USDT
+    pub open_interest_usd: f64, // total OI in USDT
     pub liquidations: Vec<Liquidation>,
 }
 
 /// A single liquidation order.
 #[derive(Clone, Debug)]
 pub struct Liquidation {
-    pub side: String,   // "BUY" (short liq) or "SELL" (long liq)
+    pub side: String, // "BUY" (short liq) or "SELL" (long liq)
     pub price: f64,
     pub qty: f64,
     pub time: i64,
@@ -142,19 +142,19 @@ pub struct Liquidation {
 pub struct MomentumSignal {
     pub asset: CryptoAsset,
     pub direction: Direction,
-    pub confidence: f64,     // 0.0 - 1.0
+    pub confidence: f64, // 0.0 - 1.0
     pub components: SignalComponents,
-    pub price: f64,          // current price at signal time
-    pub timestamp: i64,      // ms
+    pub price: f64,     // current price at signal time
+    pub timestamp: i64, // ms
 }
 
 /// Aggregated order book + trade data from multiple exchanges.
 #[derive(Clone, Debug, Default)]
 pub struct AggregatedSpot {
-    pub orderbooks: Vec<(String, OrderBook)>,   // (exchange_name, book)
-    pub trades: Vec<(String, Vec<Trade>)>,      // (exchange_name, trades)
-    pub merged_ob_imbalance: f64,               // volume-weighted across exchanges
-    pub merged_trade_flow: f64,                 // aggregated buy-sell imbalance
+    pub orderbooks: Vec<(String, OrderBook)>, // (exchange_name, book)
+    pub trades: Vec<(String, Vec<Trade>)>,    // (exchange_name, trades)
+    pub merged_ob_imbalance: f64,             // volume-weighted across exchanges
+    pub merged_trade_flow: f64,               // aggregated buy-sell imbalance
     pub exchange_count: u32,
 }
 
@@ -164,8 +164,8 @@ pub struct Market5m {
     pub condition_id: String,
     pub question: String,
     pub asset: CryptoAsset,
-    pub start_time: i64,     // ms, ET-based window start
-    pub end_time: i64,       // ms, ET-based window end
+    pub start_time: i64, // ms, ET-based window start
+    pub end_time: i64,   // ms, ET-based window end
     pub token_id_up: String,
     pub token_id_down: String,
     pub slug: String,

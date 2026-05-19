@@ -20,8 +20,8 @@ pub fn generate_signals(wallet: &WatchedWallet, changes: &[PositionChange]) -> V
             };
 
             let confidence = determine_confidence(wallet, change);
-            let cid_short = &change.position.condition_id
-                [..8.min(change.position.condition_id.len())];
+            let cid_short =
+                &change.position.condition_id[..8.min(change.position.condition_id.len())];
             let id = format!("sig_{}_{cid_short}", now.format("%Y%m%d%H%M%S"));
 
             Signal {
@@ -64,11 +64,7 @@ pub fn aggregate_signals(signals: &[Signal]) -> Vec<AggregatedSignal> {
             let wallet_count = sigs.len();
             let wallets: Vec<String> = sigs
                 .iter()
-                .map(|s| {
-                    s.wallet_tag
-                        .clone()
-                        .unwrap_or_else(|| s.wallet.clone())
-                })
+                .map(|s| s.wallet_tag.clone().unwrap_or_else(|| s.wallet.clone()))
                 .collect();
 
             let total_size: f64 = sigs

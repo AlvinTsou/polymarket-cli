@@ -44,11 +44,7 @@ pub async fn execute(
     let market = fetch_market(gamma_client, &args.market).await?;
 
     // 2. Extract token IDs for price history
-    let token_ids: Vec<U256> = market
-        .clob_token_ids
-        .as_ref()
-        .cloned()
-        .unwrap_or_default();
+    let token_ids: Vec<U256> = market.clob_token_ids.as_ref().cloned().unwrap_or_default();
 
     // 3. Fetch comments and price history concurrently
     let comments_request = CommentsRequest::builder()

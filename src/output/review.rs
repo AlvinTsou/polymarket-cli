@@ -76,10 +76,11 @@ fn print_market_summary(m: &Market) {
             .iter()
             .enumerate()
             .map(|(i, p)| {
-                let label = outcomes
-                    .get(i)
-                    .map(|s| s.as_str())
-                    .unwrap_or(if i == 0 { "Yes" } else { "No" });
+                let label = outcomes.get(i).map(|s| s.as_str()).unwrap_or(if i == 0 {
+                    "Yes"
+                } else {
+                    "No"
+                });
                 format!("{label}: {:.2}¢", p * Decimal::from(100))
             })
             .collect();
@@ -106,10 +107,7 @@ fn print_price_histories_table(
     let outcomes = market.outcomes.as_deref().unwrap_or(&[]);
 
     for (i, (token_id, ph)) in token_ids.iter().zip(price_histories.iter()).enumerate() {
-        let label = outcomes
-            .get(i)
-            .map(|s| s.as_str())
-            .unwrap_or("Unknown");
+        let label = outcomes.get(i).map(|s| s.as_str()).unwrap_or("Unknown");
         println!("[{label}] Token: {token_id}");
 
         if ph.history.is_empty() {

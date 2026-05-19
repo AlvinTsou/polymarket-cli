@@ -27,17 +27,11 @@ pub async fn score_wallet(client: &data::Client, address: &str) -> Result<SmartS
     let values = values?;
     let traded = traded?;
 
-    let portfolio_value: f64 = values
-        .first()
-        .and_then(|v| v.value.to_f64())
-        .unwrap_or(0.0);
+    let portfolio_value: f64 = values.first().and_then(|v| v.value.to_f64()).unwrap_or(0.0);
     let markets_traded = traded.traded as u32;
     let positions_count = positions.len() as u32;
 
-    let total_pnl: f64 = positions
-        .iter()
-        .filter_map(|p| p.cash_pnl.to_f64())
-        .sum();
+    let total_pnl: f64 = positions.iter().filter_map(|p| p.cash_pnl.to_f64()).sum();
 
     // Win rate: positions with positive PnL
     let closed_with_pnl: Vec<f64> = positions
@@ -162,14 +156,20 @@ mod tests {
     fn compute_score_with_win_rate_boosts() {
         let without = compute_score(1_000.0, 10, 500.0, None);
         let with_high = compute_score(1_000.0, 10, 500.0, Some(0.8));
-        assert!(with_high > without, "win rate should boost: {with_high} vs {without}");
+        assert!(
+            with_high > without,
+            "win rate should boost: {with_high} vs {without}"
+        );
     }
 
     #[test]
     fn compute_score_low_win_rate_penalizes() {
         let high_wr = compute_score(1_000.0, 10, 500.0, Some(0.9));
         let low_wr = compute_score(1_000.0, 10, 500.0, Some(0.2));
-        assert!(high_wr > low_wr, "high WR should beat low: {high_wr} vs {low_wr}");
+        assert!(
+            high_wr > low_wr,
+            "high WR should beat low: {high_wr} vs {low_wr}"
+        );
     }
 
     #[test]
