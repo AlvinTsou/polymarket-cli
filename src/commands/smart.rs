@@ -6371,10 +6371,30 @@ async fn resolve_crypto_positions(feed: &crypto::feed::BinanceFeed) -> u32 {
             Err(_) => continue,
         };
 
-        let end_time = match parse_crypto_end_time(&r.market_title) {
+        let (start_time, end_time) = match parse_crypto_time_window(&r.market_title) {
             Some(t) => t,
-            None => r.timestamp.timestamp_millis() + 10 * 60 * 1000,
+            None => (
+                r.timestamp.timestamp_millis(),
+                r.timestamp.timestamp_millis() + 10 * 60 * 1000,
+            ),
         };
+
+        let signal_age_before_start_ms = start_time - r.timestamp.timestamp_millis();
+        let duration_ms = end_time - start_time;
+        if signal_age_before_start_ms > 10 * 60 * 1000
+            || !(4 * 60 * 1000..=6 * 60 * 1000).contains(&duration_ms)
+        {
+            r.status = Some(crate::smart::TradeStatus::Expired);
+            r.closed_at = Some(Utc::now());
+            r.exit_reason = Some(format!(
+                "5m-expired: invalid timing signal_age={}m duration={}m",
+                signal_age_before_start_ms / 60_000,
+                duration_ms / 60_000
+            ));
+            changed = true;
+            resolved += 1;
+            continue;
+        }
 
         if now_ms < end_time + 30_000 {
             continue;
@@ -6448,8 +6468,8 @@ async fn resolve_crypto_positions(feed: &crypto::feed::BinanceFeed) -> u32 {
     resolved
 }
 
-/// Parse end time from crypto market title.
-fn parse_crypto_end_time(title: &str) -> Option<i64> {
+/// Parse start/end time from crypto market title.
+fn parse_crypto_time_window(title: &str) -> Option<(i64, i64)> {
     let time_part = title.split(" - ").nth(1)?;
     let time_part = time_part.trim().trim_end_matches(" ET").trim();
     let comma_pos = time_part.find(',')?;
@@ -6462,22 +6482,6 @@ fn parse_crypto_end_time(title: &str) -> Option<i64> {
 
     use chrono::Datelike;
     let year = chrono::Utc::now().year();
-    let end_str = parts[1];
-    let time_upper = end_str.to_uppercase();
-    let is_pm = time_upper.contains("PM");
-    let digits = time_upper.trim_end_matches("AM").trim_end_matches("PM");
-    let tp: Vec<&str> = digits.split(':').collect();
-    if tp.len() != 2 {
-        return None;
-    }
-    let mut hour: u32 = tp[0].parse().ok()?;
-    let min: u32 = tp[1].parse().ok()?;
-    if hour == 12 {
-        hour = if is_pm { 12 } else { 0 };
-    } else if is_pm {
-        hour += 12;
-    }
-
     let month_str = date_str.split_whitespace().next()?;
     let day_str = date_str.split_whitespace().nth(1)?;
     let month = match month_str.to_lowercase().as_str() {
@@ -6496,6 +6500,30 @@ fn parse_crypto_end_time(title: &str) -> Option<i64> {
         _ => return None,
     };
     let day: u32 = day_str.parse().ok()?;
+
+    let start = parse_crypto_et_datetime(year, month, day, parts[0])?;
+    let mut end = parse_crypto_et_datetime(year, month, day, parts[1])?;
+    if end <= start {
+        end += 24 * 60 * 60 * 1000;
+    }
+    Some((start, end))
+}
+
+fn parse_crypto_et_datetime(year: i32, month: u32, day: u32, time_str: &str) -> Option<i64> {
+    let time_upper = time_str.to_uppercase();
+    let is_pm = time_upper.contains("PM");
+    let digits = time_upper.trim_end_matches("AM").trim_end_matches("PM");
+    let tp: Vec<&str> = digits.split(':').collect();
+    if tp.len() != 2 {
+        return None;
+    }
+    let mut hour: u32 = tp[0].parse().ok()?;
+    let min: u32 = tp[1].parse().ok()?;
+    if hour == 12 {
+        hour = if is_pm { 12 } else { 0 };
+    } else if is_pm {
+        hour += 12;
+    }
 
     use chrono::TimeZone;
     let date = chrono::NaiveDate::from_ymd_opt(year, month, day)?;
@@ -6547,14 +6575,25 @@ fn cmd_crypto_status(output: &OutputFormat) -> Result<()> {
     }
 
     let open: Vec<_> = crypto_trades.iter().filter(|r| r.is_open()).collect();
-    let closed: Vec<_> = crypto_trades.iter().filter(|r| !r.is_open()).collect();
+    let expired: Vec<_> = crypto_trades
+        .iter()
+        .filter(|r| matches!(r.status.as_ref(), Some(crate::smart::TradeStatus::Expired)))
+        .collect();
+    let closed: Vec<_> = crypto_trades
+        .iter()
+        .filter(|r| matches!(r.status.as_ref(), Some(crate::smart::TradeStatus::Closed)))
+        .collect();
     let wins = closed
         .iter()
         .filter(|r| r.realized_pnl.unwrap_or(0.0) > 0.0)
         .count();
     let losses = closed.len() - wins;
     let total_pnl: f64 = closed.iter().map(|r| r.realized_pnl.unwrap_or(0.0)).sum();
-    let total_spent: f64 = crypto_trades.iter().map(|r| r.amount_usdc).sum();
+    let total_spent: f64 = crypto_trades
+        .iter()
+        .filter(|r| !matches!(r.status.as_ref(), Some(crate::smart::TradeStatus::Expired)))
+        .map(|r| r.amount_usdc)
+        .sum();
     let win_rate = if !closed.is_empty() {
         wins as f64 / closed.len() as f64 * 100.0
     } else {
@@ -6569,6 +6608,7 @@ fn cmd_crypto_status(output: &OutputFormat) -> Result<()> {
                     "total_trades": crypto_trades.len(),
                     "open": open.len(),
                     "closed": closed.len(),
+                    "expired": expired.len(),
                     "wins": wins,
                     "losses": losses,
                     "win_rate": format!("{:.1}%", win_rate),
@@ -6580,10 +6620,11 @@ fn cmd_crypto_status(output: &OutputFormat) -> Result<()> {
         _ => {
             println!("--- Crypto 5m Paper Trading ---");
             println!(
-                "Total: {}  (open: {}, closed: {})",
+                "Total: {}  (open: {}, closed: {}, expired: {})",
                 crypto_trades.len(),
                 open.len(),
-                closed.len()
+                closed.len(),
+                expired.len()
             );
             println!("W/L: {}/{} ({:.1}%)", wins, losses, win_rate);
             println!(

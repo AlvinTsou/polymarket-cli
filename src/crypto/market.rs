@@ -3,9 +3,14 @@ use chrono::Datelike;
 
 use super::{CryptoAsset, Market5m};
 
+const TARGET_WINDOW_MS: i64 = 5 * 60 * 1000;
+const WINDOW_TOLERANCE_MS: i64 = 30 * 1000;
+const MAX_START_DELAY_MS: i64 = 10 * 60 * 1000;
+const MIN_SECONDS_TO_END_MS: i64 = 30 * 1000;
+
 /// Search Polymarket for the next upcoming 5-minute BTC/ETH "Up or Down" market.
 ///
-/// Uses MarketsRequest with closed=false + startDate desc to find the most recent
+/// Uses MarketsRequest with closed=false + startDate asc to find the nearest
 /// active markets, then filters by asset keyword and time window.
 pub async fn find_next_5m_market(
     gamma_client: &polymarket_client_sdk::gamma::Client,
@@ -13,11 +18,12 @@ pub async fn find_next_5m_market(
 ) -> Result<Option<Market5m>> {
     use polymarket_client_sdk::gamma::types::request::MarketsRequest;
 
-    // Fetch recent active markets sorted by newest first
+    // Fetch active markets sorted by start time so near-term windows are not
+    // pushed out of the page by tomorrow's listings.
     let request = MarketsRequest::builder()
-        .limit(50)
+        .limit(100)
         .order("startDate".to_string())
-        .ascending(false)
+        .ascending(true)
         .closed(false)
         .build();
 
@@ -46,8 +52,13 @@ pub async fn find_next_5m_market(
             None => continue,
         };
 
-        // Skip markets that already ended
-        if end < now_ms {
+        let duration_ms = end - start;
+        let starts_in_ms = start - now_ms;
+
+        // Only pair a live momentum signal with a near-term 5m market.
+        // Gamma can return tomorrow's markets first; trading those would use a
+        // stale signal for a future window and pollute win-rate/PnL tracking.
+        if !is_valid_5m_candidate(duration_ms, starts_in_ms, end - now_ms) {
             continue;
         }
 
@@ -102,6 +113,43 @@ pub async fn find_next_5m_market(
     }
 
     Ok(best)
+}
+
+fn is_valid_5m_candidate(duration_ms: i64, starts_in_ms: i64, ends_in_ms: i64) -> bool {
+    let is_five_min = (duration_ms - TARGET_WINDOW_MS).abs() <= WINDOW_TOLERANCE_MS;
+    is_five_min && starts_in_ms <= MAX_START_DELAY_MS && ends_in_ms >= MIN_SECONDS_TO_END_MS
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn accepts_near_term_5m_window() {
+        assert!(is_valid_5m_candidate(
+            TARGET_WINDOW_MS,
+            2 * 60 * 1000,
+            7 * 60 * 1000
+        ));
+    }
+
+    #[test]
+    fn rejects_tomorrow_window() {
+        assert!(!is_valid_5m_candidate(
+            TARGET_WINDOW_MS,
+            24 * 60 * 60 * 1000,
+            24 * 60 * 60 * 1000 + TARGET_WINDOW_MS
+        ));
+    }
+
+    #[test]
+    fn rejects_non_5m_window() {
+        assert!(!is_valid_5m_candidate(
+            15 * 60 * 1000,
+            2 * 60 * 1000,
+            17 * 60 * 1000
+        ));
+    }
 }
 
 /// List all active 5-minute crypto markets for display.

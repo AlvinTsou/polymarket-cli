@@ -53,3 +53,20 @@
 19. **Night Shift reports find real bugs.** R114 found 14 actionable issues including 5 P0s. Code review agent found 3 additional HIGH issues (timeouts, funding dilution, OKX OI scale). Run both regularly.
 
 20. **Fix P0s before adding features.** Sprint 12 initially mixed feature work (futures/multi-exchange) with bug fixes. Better to fix all P0/P1 first, commit, then add features on a clean base.
+
+## Paper Trade Exit Logic
+
+21. **Polymarket settles atomically — no `-45%` price exists during settlement.** Market price snaps from mid-range directly to 0 or 1 at resolution. `roi <= stop_loss_pct` will only fire on the post-settlement snapshot, producing `stop-loss: -99% (limit -45%)` log entries. Protection must happen at ENTRY (block markets resolving < N hours away), not at exit. See commit `f9ba1ee`.
+
+22. **Title-based date parsing fails on award/season markets.** `market_within_horizon` only matches month names or "end of YYYY". Titles like "2026 Crunchyroll Anime Awards" have neither → default `return true` (allow). Always fall back to `end_date` / `end_date_iso` from gamma API metadata. Also: aggregated trigger path originally skipped this check entirely (`src/commands/smart.rs:4023`).
+
+23. **`if current <= 0.0 { continue; }` creates zombie positions.** When a market closes, clob midpoint returns 0 or fails — and the self-managed exit loop silently skips the position forever. Found 24 zombies hiding -$140.59 in "open" status (some 44 days post-resolution). Replace `continue` with a gamma lookup: if `market.closed == true`, close at `outcomePrices[outcome_index]` with reason `market-closed: settled @ X`.
+
+## macOS / LaunchAgent
+
+24. **Rebuilt ad-hoc-signed binaries get TCC-blocked silently when launched by LaunchAgent.** `cargo build --release` produces a new code signature hash; macOS Gatekeeper/TCC sees it as a different binary and denies access to anything the OLD binary was approved for (Full Disk Access, etc.). Interactive `./target/release/polymarket` works fine, but launchd-spawned process hangs in `dyld __open` for minutes because `tccd` denies without prompting (background sessions can't show UI). Diagnose with:
+   ```
+   /usr/bin/log show --last 2m --predicate 'process == "syspolicyd"'
+   /usr/bin/log show --last 2m --predicate 'process == "tccd"'
+   ```
+   Fix: System Settings → Privacy & Security → Full Disk Access → remove old polymarket entry, re-add the new binary path. Workaround for the future: use a stable signing identity (paid Apple Developer cert) so signature hash is consistent across rebuilds.
