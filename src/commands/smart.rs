@@ -3972,6 +3972,29 @@ fn market_within_horizon(title: &str, max_days: i64) -> bool {
     }
 }
 
+/// Fetch market metadata from gamma and check if it resolves within `hours`.
+/// Returns:
+///   - `Some(true)` if `end_date` (or `end_date_iso`) is within `hours` from now
+///   - `Some(false)` if resolution is further out
+///   - `None` if the market cannot be fetched or has no end-date metadata
+async fn market_resolves_within_hours(condition_id_str: &str, hours: i64) -> Option<bool> {
+    use polymarket_client_sdk::gamma::{Client, types::request::MarketsRequest};
+    let cid = super::parse_condition_id(condition_id_str).ok()?;
+    let client = Client::default();
+    let req = MarketsRequest::builder().condition_ids(vec![cid]).build();
+    let markets = client.markets(&req).await.ok()?;
+    let market = markets.first()?;
+    let now = Utc::now();
+    if let Some(end_dt) = market.end_date {
+        return Some((end_dt - now).num_hours() <= hours);
+    }
+    if let Some(end_iso) = market.end_date_iso {
+        let dt = end_iso.and_hms_opt(23, 59, 59)?.and_utc();
+        return Some((dt - now).num_hours() <= hours);
+    }
+    None
+}
+
 fn evaluate_triggers(
     all_signals: &[Signal],
     aggregated: &[AggregatedSignal],
@@ -4026,6 +4049,10 @@ fn evaluate_triggers(
             }
             // Skip near-resolved markets
             if agg.avg_price < 0.05 || agg.avg_price > 0.95 {
+                continue;
+            }
+            // Resolution horizon: only trade markets resolving within 14 days
+            if !market_within_horizon(&agg.market_title, 14) {
                 continue;
             }
 
@@ -4590,6 +4617,14 @@ async fn cmd_monitor(
                             // Re-apply price filter: price may have drifted out of 0.15-0.80 during queue wait
                             if current_price < 0.15 || current_price > 0.80 {
                                 eprintln!("  PRICE-DRIFT: {} now {:.4} (out of 0.15-0.80)", trigger.market_title, current_price);
+                                continue;
+                            }
+
+                            // Resolution-time guard: skip markets resolving within 24h.
+                            // Polymarket settles atomically (price -> 0 or 1), so the -45%
+                            // stop-loss cannot catch a settlement event — block at entry instead.
+                            if let Some(true) = market_resolves_within_hours(&trigger.condition_id, 24).await {
+                                eprintln!("  NEAR-RESOLUTION (skip): {}", trigger.market_title);
                                 continue;
                             }
 
