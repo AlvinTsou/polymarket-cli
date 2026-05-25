@@ -232,6 +232,13 @@ pub enum SmartCommand {
         status: String,
     },
 
+    /// Reconcile open paper trades against closed Gamma markets
+    Reconcile {
+        /// Preview closures without updating follows.jsonl
+        #[arg(long)]
+        dry_run: bool,
+    },
+
     /// Backtest: analyze what-if returns for all historical signals
     Backtest {
         /// Simulated USDC per trade
@@ -568,6 +575,8 @@ pub async fn execute(
             &output,
         ),
 
+        SmartCommand::Reconcile { dry_run } => cmd_reconcile(gamma_client, dry_run, &output).await,
+
         SmartCommand::Backtest {
             amount,
             min_confidence,
@@ -602,6 +611,7 @@ pub async fn execute(
         } => {
             cmd_monitor(
                 client,
+                gamma_client,
                 &interval,
                 &min_confidence,
                 min_wallets,
@@ -2531,6 +2541,237 @@ struct RoiRow {
     status: String,
 }
 
+// ── Reconcile ───────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+struct SettlementQuote {
+    exit_price: f64,
+    question: String,
+}
+
+async fn fetch_settlement_quote(
+    _gamma_client: &polymarket_client_sdk::gamma::Client,
+    condition_id_str: &str,
+    outcome: &str,
+) -> Result<Option<SettlementQuote>> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()?;
+    let markets: serde_json::Value = client
+        .get("https://gamma-api.polymarket.com/markets")
+        .query(&[("condition_ids", condition_id_str), ("closed", "true")])
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+
+    let Some(market) = markets.as_array().and_then(|items| items.first()) else {
+        return Ok(None);
+    };
+    if market.get("closed").and_then(|v| v.as_bool()) != Some(true) {
+        return Ok(None);
+    }
+
+    let Some(outcomes) = json_string_vec_field(market, "outcomes") else {
+        return Ok(None);
+    };
+    let Some(prices) = json_f64_vec_field(market, "outcomePrices") else {
+        return Ok(None);
+    };
+    let Some(outcome_idx) = outcomes
+        .iter()
+        .position(|o| o.trim().eq_ignore_ascii_case(outcome.trim()))
+    else {
+        return Ok(None);
+    };
+    let Some(price) = prices.get(outcome_idx).copied() else {
+        return Ok(None);
+    };
+
+    Ok(Some(SettlementQuote {
+        exit_price: price,
+        question: market
+            .get("question")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string(),
+    }))
+}
+
+fn json_string_vec_field(value: &serde_json::Value, key: &str) -> Option<Vec<String>> {
+    let field = value.get(key)?;
+    if let Some(items) = field.as_array() {
+        return Some(
+            items
+                .iter()
+                .filter_map(|item| item.as_str().map(str::to_string))
+                .collect(),
+        );
+    }
+    field
+        .as_str()
+        .and_then(|raw| serde_json::from_str::<Vec<String>>(raw).ok())
+}
+
+fn json_f64_vec_field(value: &serde_json::Value, key: &str) -> Option<Vec<f64>> {
+    let field = value.get(key)?;
+    if let Some(items) = field.as_array() {
+        return Some(
+            items
+                .iter()
+                .filter_map(|item| {
+                    item.as_f64()
+                        .or_else(|| item.as_str().and_then(|s| s.parse::<f64>().ok()))
+                })
+                .collect(),
+        );
+    }
+    field
+        .as_str()
+        .and_then(|raw| serde_json::from_str::<Vec<String>>(raw).ok())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.parse::<f64>().ok())
+                .collect()
+        })
+}
+
+fn settle_record(record: &mut FollowRecord, exit_price: f64, reason: String) {
+    let entry = record.effective_entry();
+    let shares = if entry > 0.0 {
+        record.amount_usdc / entry
+    } else {
+        0.0
+    };
+    let pnl = match record.side.as_str() {
+        "SELL" => record.amount_usdc + (entry - exit_price) * shares - record.amount_usdc,
+        _ => shares * exit_price - record.amount_usdc,
+    };
+
+    record.status = Some(crate::smart::TradeStatus::Closed);
+    record.closed_at = Some(Utc::now());
+    record.exit_price = Some(exit_price);
+    record.realized_pnl = Some(pnl);
+    record.exit_reason = Some(reason);
+}
+
+async fn cmd_reconcile(
+    gamma_client: &polymarket_client_sdk::gamma::Client,
+    dry_run: bool,
+    output: &OutputFormat,
+) -> Result<()> {
+    use tabled::{Table, Tabled, settings::Style};
+
+    #[derive(Tabled)]
+    struct ReconcileRow {
+        #[tabled(rename = "Action")]
+        action: String,
+        #[tabled(rename = "Market")]
+        market: String,
+        #[tabled(rename = "Outcome")]
+        outcome: String,
+        #[tabled(rename = "Entry")]
+        entry: String,
+        #[tabled(rename = "Exit")]
+        exit: String,
+        #[tabled(rename = "PnL")]
+        pnl: String,
+    }
+
+    let mut records = store::load_follow_records()?;
+    let mut rows: Vec<ReconcileRow> = Vec::new();
+    let mut scanned = 0usize;
+    let mut closed = 0usize;
+    let mut skipped_open = 0usize;
+    let mut errors = 0usize;
+    let mut total_pnl = 0.0f64;
+
+    for record in records.iter_mut().filter(|r| r.dry_run && r.is_open()) {
+        scanned += 1;
+        match fetch_settlement_quote(gamma_client, &record.condition_id, &record.outcome).await {
+            Ok(Some(quote)) => {
+                let mut preview = record.clone();
+                let reason = format!("market-closed: settled @ {:.4}", quote.exit_price);
+                settle_record(&mut preview, quote.exit_price, reason.clone());
+                let pnl = preview.realized_pnl.unwrap_or(0.0);
+                total_pnl += pnl;
+                closed += 1;
+
+                rows.push(ReconcileRow {
+                    action: if dry_run { "DRY-RUN" } else { "CLOSE" }.to_string(),
+                    market: crate::output::truncate(
+                        if quote.question.is_empty() {
+                            &record.market_title
+                        } else {
+                            &quote.question
+                        },
+                        34,
+                    ),
+                    outcome: record.outcome.clone(),
+                    entry: format!("{:.4}", record.effective_entry()),
+                    exit: format!("{:.4}", quote.exit_price),
+                    pnl: format!("{pnl:+.2}"),
+                });
+
+                if !dry_run {
+                    settle_record(record, quote.exit_price, reason);
+                }
+            }
+            Ok(None) => {
+                skipped_open += 1;
+            }
+            Err(e) => {
+                errors += 1;
+                rows.push(ReconcileRow {
+                    action: "ERROR".to_string(),
+                    market: crate::output::truncate(&record.market_title, 34),
+                    outcome: record.outcome.clone(),
+                    entry: format!("{:.4}", record.effective_entry()),
+                    exit: "-".to_string(),
+                    pnl: crate::output::truncate(&e.to_string(), 18),
+                });
+            }
+        }
+
+        tokio::time::sleep(std::time::Duration::from_millis(75)).await;
+    }
+
+    if !dry_run && closed > 0 {
+        store::save_follow_records(&records)?;
+    }
+
+    match output {
+        OutputFormat::Json => {
+            crate::output::print_json(&serde_json::json!({
+                "dry_run": dry_run,
+                "scanned_open_dry_run": scanned,
+                "closed": closed,
+                "skipped_open_or_unpriced": skipped_open,
+                "errors": errors,
+                "total_pnl": total_pnl,
+            }))?;
+        }
+        OutputFormat::Table => {
+            println!(
+                "--- Reconcile {} ---",
+                if dry_run { "(dry-run)" } else { "(applied)" }
+            );
+            if rows.is_empty() {
+                println!("No settled open paper positions found.");
+            } else {
+                println!("{}", Table::new(rows).with(Style::rounded()));
+            }
+            println!(
+                "Scanned: {scanned}, closed: {closed}, skipped/open: {skipped_open}, errors: {errors}, PnL: {total_pnl:+.2}"
+            );
+        }
+    }
+
+    Ok(())
+}
+
 // ── Backtest ────────────────────────────────────────────────────
 
 fn cmd_backtest(
@@ -4182,6 +4423,7 @@ fn evaluate_triggers(
 #[allow(clippy::too_many_arguments)]
 async fn cmd_monitor(
     client: &data::Client,
+    gamma_client: &polymarket_client_sdk::gamma::Client,
     interval_str: &str,
     min_confidence_str: &str,
     min_wallets: u32,
@@ -4380,6 +4622,8 @@ async fn cmd_monitor(
                     let time_stop_min_roi = 5.0f64;       // ... and ROI < +5%
                     let mut peak_roi = store::load_peak_roi().unwrap_or_default();
                     let mut peak_changed = false;
+                    let mut settlement_cache: std::collections::HashMap<(String, String), Option<SettlementQuote>> =
+                        std::collections::HashMap::new();
 
                     for r in &open_positions {
                         // Skip crypto positions — they have their own resolution logic
@@ -4389,67 +4633,95 @@ async fn cmd_monitor(
                         let entry = r.effective_entry();
                         if entry <= 0.0 { continue; }
                         let pos_id = r.position_id.as_deref().unwrap_or(&r.condition_id);
-                        if let Some(&current) = live_prices.get(&(r.condition_id.clone(), r.outcome.clone())) {
-                            if current <= 0.0 { continue; }
-                            let pnl = calc_open_pnl(&r.side, r.amount_usdc, entry, current);
-                            let roi = if r.amount_usdc > 0.0 { pnl / r.amount_usdc * 100.0 } else { 0.0 };
+                        let price_key = (r.condition_id.clone(), r.outcome.clone());
+                        let current = match live_prices.get(&price_key).copied() {
+                            Some(current) if current > 0.0 => current,
+                            _ => {
+                                let quote = if let Some(cached) = settlement_cache.get(&price_key) {
+                                    cached.clone()
+                                } else {
+                                    let fetched = match fetch_settlement_quote(gamma_client, &r.condition_id, &r.outcome).await {
+                                        Ok(quote) => quote,
+                                        Err(e) => {
+                                            eprintln!("warn: failed to reconcile closed-market price for {}: {e}", r.market_title);
+                                            None
+                                        }
+                                    };
+                                    settlement_cache.insert(price_key.clone(), fetched.clone());
+                                    fetched
+                                };
 
-                            // Take-profit
-                            if roi >= take_profit_pct {
-                                let reason = format!("take-profit: {:.1}% (target {:.0}%)", roi, take_profit_pct);
-                                if let Err(e) = store::close_follow_position(&r.condition_id, &r.outcome, current, &reason) {
-                                    eprintln!("warn: failed to close take-profit position: {e}");
-                                }
-                                peak_roi.remove(pos_id);
-                                peak_changed = true;
-                                eprintln!("  TAKE-PROFIT: {} @ {:.3} -> {:.3} ({:+.1}%)", r.market_title, entry, current, roi);
-                                continue;
-                            }
-
-                            // Stop-loss
-                            if roi <= stop_loss_pct {
-                                let reason = format!("stop-loss: {:.1}% (limit {:.0}%)", roi, stop_loss_pct);
-                                if let Err(e) = store::close_follow_position(&r.condition_id, &r.outcome, current, &reason) {
-                                    eprintln!("warn: failed to close stop-loss position: {e}");
-                                }
-                                peak_roi.remove(pos_id);
-                                peak_changed = true;
-                                eprintln!("  STOP-LOSS: {} @ {:.3} -> {:.3} ({:+.1}%)", r.market_title, entry, current, roi);
-                                continue;
-                            }
-
-                            // Time-stop: close stale positions (> 7 days, ROI < +5%)
-                            let age_days = (Utc::now() - r.timestamp).num_days();
-                            if age_days >= time_stop_days && roi < time_stop_min_roi {
-                                let reason = format!("time-stop: {}d old, ROI {:.1}% < {:.0}%", age_days, roi, time_stop_min_roi);
-                                if let Err(e) = store::close_follow_position(&r.condition_id, &r.outcome, current, &reason) {
-                                    eprintln!("warn: failed to close time-stop position: {e}");
-                                }
-                                peak_roi.remove(pos_id);
-                                peak_changed = true;
-                                eprintln!("  TIME-STOP: {} ({}d, ROI {:.1}%) @ {:.3}", r.market_title, age_days, roi, current);
-                                continue;
-                            }
-
-                            // Trailing stop: update peak and check drawdown
-                            let prev_peak = peak_roi.get(pos_id).copied().unwrap_or(0.0f64);
-                            if roi > prev_peak {
-                                peak_roi.insert(pos_id.to_string(), roi);
-                                peak_changed = true;
-                            }
-                            let current_peak = peak_roi.get(pos_id).copied().unwrap_or(0.0);
-
-                            if current_peak >= trailing_activate_pct {
-                                let threshold = current_peak * (1.0 - trailing_drawdown_pct / 100.0);
-                                if roi < threshold {
-                                    let reason = format!("trailing-stop: peak {:.1}% -> {:.1}% (drawdown {:.0}%)", current_peak, roi, trailing_drawdown_pct);
-                                    if let Err(e) = store::close_follow_position(&r.condition_id, &r.outcome, current, &reason) {
-                                        eprintln!("warn: failed to close trailing-stop position: {e}");
+                                if let Some(quote) = quote {
+                                    let reason = format!("market-closed: settled @ {:.4}", quote.exit_price);
+                                    if let Err(e) = store::close_follow_position(&r.condition_id, &r.outcome, quote.exit_price, &reason) {
+                                        eprintln!("warn: failed to close settled position: {e}");
+                                    } else {
+                                        peak_roi.remove(pos_id);
+                                        peak_changed = true;
+                                        eprintln!("  MARKET-CLOSED: {} {} @ {:.4}", r.market_title, r.outcome, quote.exit_price);
                                     }
-                                    peak_roi.remove(pos_id);
-                                    peak_changed = true;
-                                    eprintln!("  TRAILING-STOP: {} peak {:.1}% -> now {:.1}% (threshold {:.1}%) @ {:.3}", r.market_title, current_peak, roi, threshold, current);
                                 }
+                                continue;
+                            }
+                        };
+                        let pnl = calc_open_pnl(&r.side, r.amount_usdc, entry, current);
+                        let roi = if r.amount_usdc > 0.0 { pnl / r.amount_usdc * 100.0 } else { 0.0 };
+
+                        // Take-profit
+                        if roi >= take_profit_pct {
+                            let reason = format!("take-profit: {:.1}% (target {:.0}%)", roi, take_profit_pct);
+                            if let Err(e) = store::close_follow_position(&r.condition_id, &r.outcome, current, &reason) {
+                                eprintln!("warn: failed to close take-profit position: {e}");
+                            }
+                            peak_roi.remove(pos_id);
+                            peak_changed = true;
+                            eprintln!("  TAKE-PROFIT: {} @ {:.3} -> {:.3} ({:+.1}%)", r.market_title, entry, current, roi);
+                            continue;
+                        }
+
+                        // Stop-loss
+                        if roi <= stop_loss_pct {
+                            let reason = format!("stop-loss: {:.1}% (limit {:.0}%)", roi, stop_loss_pct);
+                            if let Err(e) = store::close_follow_position(&r.condition_id, &r.outcome, current, &reason) {
+                                eprintln!("warn: failed to close stop-loss position: {e}");
+                            }
+                            peak_roi.remove(pos_id);
+                            peak_changed = true;
+                            eprintln!("  STOP-LOSS: {} @ {:.3} -> {:.3} ({:+.1}%)", r.market_title, entry, current, roi);
+                            continue;
+                        }
+
+                        // Time-stop: close stale positions (> 7 days, ROI < +5%)
+                        let age_days = (Utc::now() - r.timestamp).num_days();
+                        if age_days >= time_stop_days && roi < time_stop_min_roi {
+                            let reason = format!("time-stop: {}d old, ROI {:.1}% < {:.0}%", age_days, roi, time_stop_min_roi);
+                            if let Err(e) = store::close_follow_position(&r.condition_id, &r.outcome, current, &reason) {
+                                eprintln!("warn: failed to close time-stop position: {e}");
+                            }
+                            peak_roi.remove(pos_id);
+                            peak_changed = true;
+                            eprintln!("  TIME-STOP: {} ({}d, ROI {:.1}%) @ {:.3}", r.market_title, age_days, roi, current);
+                            continue;
+                        }
+
+                        // Trailing stop: update peak and check drawdown
+                        let prev_peak = peak_roi.get(pos_id).copied().unwrap_or(0.0f64);
+                        if roi > prev_peak {
+                            peak_roi.insert(pos_id.to_string(), roi);
+                            peak_changed = true;
+                        }
+                        let current_peak = peak_roi.get(pos_id).copied().unwrap_or(0.0);
+
+                        if current_peak >= trailing_activate_pct {
+                            let threshold = current_peak * (1.0 - trailing_drawdown_pct / 100.0);
+                            if roi < threshold {
+                                let reason = format!("trailing-stop: peak {:.1}% -> {:.1}% (drawdown {:.0}%)", current_peak, roi, trailing_drawdown_pct);
+                                if let Err(e) = store::close_follow_position(&r.condition_id, &r.outcome, current, &reason) {
+                                    eprintln!("warn: failed to close trailing-stop position: {e}");
+                                }
+                                peak_roi.remove(pos_id);
+                                peak_changed = true;
+                                eprintln!("  TRAILING-STOP: {} peak {:.1}% -> now {:.1}% (threshold {:.1}%) @ {:.3}", r.market_title, current_peak, roi, threshold, current);
                             }
                         }
                     }
