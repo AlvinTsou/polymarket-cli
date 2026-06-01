@@ -1,3 +1,4 @@
+mod arbitrage;
 mod auth;
 mod commands;
 mod config;
@@ -68,6 +69,8 @@ enum Commands {
     Wallet(commands::wallet::WalletArgs),
     /// Smart money tracking: discover, watch, scan, and follow
     Smart(commands::smart::SmartArgs),
+    /// Advanced quantitative arbitrage strategies (complement, bias)
+    Arbitrage(commands::arbitrage::ArbitrageArgs),
     /// Check API health status
     Status,
     /// Update to the latest version
@@ -213,6 +216,15 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
                 cli.output,
                 cli.private_key.as_deref(),
                 cli.signature_type.as_deref(),
+            )
+            .await
+        }
+        Commands::Arbitrage(args) => {
+            commands::arbitrage::execute(
+                &polymarket_client_sdk::gamma::Client::default(),
+                &polymarket_client_sdk::clob::Client::default(),
+                args,
+                cli.output,
             )
             .await
         }

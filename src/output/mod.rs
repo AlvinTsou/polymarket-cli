@@ -1,4 +1,5 @@
 pub mod approve;
+pub mod arbitrage;
 pub mod bridge;
 pub mod clob;
 pub mod comments;
