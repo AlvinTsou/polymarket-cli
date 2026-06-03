@@ -1,112 +1,135 @@
 use anyhow::{Context, Result};
-use chrono::Datelike;
+use rust_decimal::prelude::ToPrimitive;
 
 use super::{CryptoAsset, Market5m};
 
-const TARGET_WINDOW_MS: i64 = 5 * 60 * 1000;
-const WINDOW_TOLERANCE_MS: i64 = 30 * 1000;
-const MAX_START_DELAY_MS: i64 = 10 * 60 * 1000;
-const MIN_SECONDS_TO_END_MS: i64 = 30 * 1000;
-
-/// Search Polymarket for the next upcoming 5-minute BTC/ETH "Up or Down" market.
+/// Search Polymarket for the next upcoming BTC/ETH "Daily Price" market that fits trading constraints.
 ///
-/// Uses MarketsRequest with closed=false + startDate asc to find the nearest
-/// active markets, then filters by asset keyword and time window.
+/// Uses SearchRequest to query active, relevant markets and selects the strike price closest to 0.50.
 pub async fn find_next_5m_market(
     gamma_client: &polymarket_client_sdk::gamma::Client,
     asset: CryptoAsset,
 ) -> Result<Option<Market5m>> {
-    use polymarket_client_sdk::gamma::types::request::MarketsRequest;
+    use polymarket_client_sdk::gamma::types::request::SearchRequest;
+    use chrono::Utc;
 
-    // Fetch active markets sorted by start time so near-term windows are not
-    // pushed out of the page by tomorrow's listings.
-    let request = MarketsRequest::builder()
-        .limit(100)
-        .order("startDate".to_string())
-        .ascending(true)
-        .closed(false)
-        .build();
-
-    let markets = gamma_client
-        .markets(&request)
-        .await
-        .context("failed to fetch gamma markets")?;
-
-    let keyword = match asset {
-        CryptoAsset::BTC => "Bitcoin Up or Down",
-        CryptoAsset::ETH => "Ethereum Up or Down",
+    let query = match asset {
+        CryptoAsset::BTC => "Bitcoin",
+        CryptoAsset::ETH => "Ethereum",
     };
 
-    let now_ms = chrono::Utc::now().timestamp_millis();
+    let request = SearchRequest::builder()
+        .q(query.to_string())
+        .limit_per_type(30)
+        .build();
+
+    let results = gamma_client
+        .search(&request)
+        .await
+        .context("failed to search gamma markets")?;
+
+    let events = results.events.unwrap_or_default();
     let mut best: Option<Market5m> = None;
+    let mut best_dist_to_center = 1.0; // We want yes_price closest to 0.50 (center)
+    let now = Utc::now();
 
-    for m in &markets {
-        let question = m.question.as_deref().unwrap_or("");
-        if !question.contains(keyword) {
-            continue;
-        }
-
-        // Parse time window from title
-        let (start, end) = match parse_5m_time_window(question) {
-            Some(t) => t,
+    for event in &events {
+        let mkts = match &event.markets {
+            Some(m) => m,
             None => continue,
         };
 
-        let duration_ms = end - start;
-        let starts_in_ms = start - now_ms;
-
-        // Only pair a live momentum signal with a near-term 5m market.
-        // Gamma can return tomorrow's markets first; trading those would use a
-        // stale signal for a future window and pollute win-rate/PnL tracking.
-        if !is_valid_5m_candidate(duration_ms, starts_in_ms, end - now_ms) {
-            continue;
-        }
-
-        // Extract token IDs and outcomes
-        let token_ids = m.clob_token_ids.as_ref();
-        let outcomes = m.outcomes.as_ref();
-        let (token_up, token_down) = match (token_ids, outcomes) {
-            (Some(ids), Some(outs)) if ids.len() >= 2 && outs.len() >= 2 => {
-                let mut up_idx = 0usize;
-                let mut down_idx = 1usize;
-                for (i, out) in outs.iter().enumerate() {
-                    let lower = out.to_lowercase();
-                    if lower.contains("up") {
-                        up_idx = i;
-                    } else if lower.contains("down") {
-                        down_idx = i;
-                    }
-                }
-                (ids[up_idx].to_string(), ids[down_idx].to_string())
+        for m in mkts {
+            // Ensure market is active (not closed)
+            if m.closed.unwrap_or(false) {
+                continue;
             }
-            _ => continue,
-        };
 
-        let condition_id = m
-            .condition_id
-            .map(|c| format!("{c:#x}"))
-            .unwrap_or_default();
+            let question = m.question.as_deref().unwrap_or("");
+            
+            // Check if it is a Daily market (e.g. contains "price of Bitcoin be" or "price of Ethereum be")
+            let is_btc_price_market = asset == CryptoAsset::BTC && (question.contains("price of Bitcoin be") || question.contains("Bitcoin ($BTC) price be"));
+            let is_eth_price_market = asset == CryptoAsset::ETH && (question.contains("price of Ethereum be") || question.contains("Ethereum ($ETH) price be"));
+            if !is_btc_price_market && !is_eth_price_market {
+                continue;
+            }
 
-        let candidate = Market5m {
-            condition_id,
-            question: question.to_string(),
-            asset,
-            start_time: start,
-            end_time: end,
-            token_id_up: token_up,
-            token_id_down: token_down,
-            slug: m.slug.clone().unwrap_or_default(),
-        };
+            // Must end within 36 hours from now, and not ended yet
+            let end_dt = match m.end_date {
+                Some(dt) => dt,
+                None => continue,
+            };
 
-        // Pick the soonest upcoming market (closest to now but not ended)
-        match &best {
-            None => best = Some(candidate),
-            Some(current) => {
-                // Prefer market closest to starting (smallest positive secs_until)
-                let cur_dist = (current.start_time - now_ms).abs();
-                let new_dist = (candidate.start_time - now_ms).abs();
-                if new_dist < cur_dist {
+            let ends_in_ms = end_dt.timestamp_millis() - now.timestamp_millis();
+            let min_ms = 10 * 60 * 1000; // at least 10 minutes left
+            let max_ms = 36 * 3600 * 1000; // at most 36 hours (same-day or next-day daily markets)
+            if ends_in_ms < min_ms || ends_in_ms > max_ms {
+                continue;
+            }
+
+            // Extract outcomes prices for price filtering (0.15 - 0.80)
+            let prices = m.outcome_prices.as_ref();
+            let yes_price = match prices {
+                Some(p) if p.len() >= 2 => p[0].to_f64().unwrap_or(0.0),
+                _ => 0.0,
+            };
+
+            // Ensure the yes price is in standard tradeable range
+            if yes_price < 0.15 || yes_price > 0.80 {
+                continue;
+            }
+
+            // Extract token IDs and outcomes
+            let token_ids = m.clob_token_ids.as_ref();
+            let outcomes = m.outcomes.as_ref();
+            let (token_up, token_down) = match (token_ids, outcomes) {
+                (Some(ids), Some(outs)) if ids.len() >= 2 && outs.len() >= 2 => {
+                    let mut up_idx = 0usize;
+                    let mut down_idx = 1usize;
+                    for (i, out) in outs.iter().enumerate() {
+                        let lower = out.to_lowercase();
+                        if lower == "yes" {
+                            up_idx = i;
+                        } else if lower == "no" {
+                            down_idx = i;
+                        }
+                    }
+                    (ids[up_idx].to_string(), ids[down_idx].to_string())
+                }
+                _ => continue,
+            };
+
+            let condition_id = m
+                .condition_id
+                .map(|c| format!("{c:#x}"))
+                .unwrap_or_default();
+
+            // start_time can be assumed as 24h before end_time
+            let start_time = end_dt.timestamp_millis() - 24 * 3600 * 1000;
+
+            let candidate = Market5m {
+                condition_id,
+                question: question.to_string(),
+                asset,
+                start_time,
+                end_time: end_dt.timestamp_millis(),
+                token_id_up: token_up,
+                token_id_down: token_down,
+                slug: m.slug.clone().unwrap_or_default(),
+            };
+
+            // Pick the market with yes_price closest to 0.50 (most active/traded strike price)
+            let dist = (yes_price - 0.50).abs();
+            match &best {
+                None => {
                     best = Some(candidate);
+                    best_dist_to_center = dist;
+                }
+                Some(_) => {
+                    if dist < best_dist_to_center {
+                        best = Some(candidate);
+                        best_dist_to_center = dist;
+                    }
                 }
             }
         }
@@ -115,44 +138,7 @@ pub async fn find_next_5m_market(
     Ok(best)
 }
 
-fn is_valid_5m_candidate(duration_ms: i64, starts_in_ms: i64, ends_in_ms: i64) -> bool {
-    let is_five_min = (duration_ms - TARGET_WINDOW_MS).abs() <= WINDOW_TOLERANCE_MS;
-    is_five_min && starts_in_ms <= MAX_START_DELAY_MS && ends_in_ms >= MIN_SECONDS_TO_END_MS
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn accepts_near_term_5m_window() {
-        assert!(is_valid_5m_candidate(
-            TARGET_WINDOW_MS,
-            2 * 60 * 1000,
-            7 * 60 * 1000
-        ));
-    }
-
-    #[test]
-    fn rejects_tomorrow_window() {
-        assert!(!is_valid_5m_candidate(
-            TARGET_WINDOW_MS,
-            24 * 60 * 60 * 1000,
-            24 * 60 * 60 * 1000 + TARGET_WINDOW_MS
-        ));
-    }
-
-    #[test]
-    fn rejects_non_5m_window() {
-        assert!(!is_valid_5m_candidate(
-            15 * 60 * 1000,
-            2 * 60 * 1000,
-            17 * 60 * 1000
-        ));
-    }
-}
-
-/// List all active 5-minute crypto markets for display.
+/// List all active crypto markets for display.
 pub async fn list_active_5m_markets(
     gamma_client: &polymarket_client_sdk::gamma::Client,
 ) -> Result<Vec<Market5m>> {
@@ -165,84 +151,7 @@ pub async fn list_active_5m_markets(
     Ok(all)
 }
 
-/// Parse a 5-minute time window from a market title.
-///
-/// Example: "Bitcoin Up or Down - March 29, 2:40AM-2:45AM ET"
-/// Returns (start_ms, end_ms) in UTC.
-fn parse_5m_time_window(title: &str) -> Option<(i64, i64)> {
-    let time_part = title.split(" - ").nth(1)?;
-    let time_part = time_part.trim().trim_end_matches(" ET").trim();
-
-    let comma_pos = time_part.find(',')?;
-    let date_str = time_part[..comma_pos].trim();
-    let time_range = time_part[comma_pos + 1..].trim();
-
-    // "2:40AM-2:45AM" or "2:40AM - 2:45AM"
-    let time_range = time_range.replace(' ', "");
-    let parts: Vec<&str> = time_range.splitn(2, '-').collect();
-    if parts.len() != 2 {
-        return None;
-    }
-
-    let year = chrono::Utc::now().year();
-    let start = parse_et_datetime(date_str, parts[0], year)?;
-    let end = parse_et_datetime(date_str, parts[1], year)?;
-
-    Some((start, end))
-}
-
-/// Parse a date + time string in ET to UTC milliseconds.
-fn parse_et_datetime(date_str: &str, time_str: &str, year: i32) -> Option<i64> {
-    use chrono::{NaiveDate, NaiveTime, TimeZone};
-
-    let parts: Vec<&str> = date_str.split_whitespace().collect();
-    if parts.len() != 2 {
-        return None;
-    }
-    let month = match parts[0].to_lowercase().as_str() {
-        "january" | "jan" => 1u32,
-        "february" | "feb" => 2,
-        "march" | "mar" => 3,
-        "april" | "apr" => 4,
-        "may" => 5,
-        "june" | "jun" => 6,
-        "july" | "jul" => 7,
-        "august" | "aug" => 8,
-        "september" | "sep" => 9,
-        "october" | "oct" => 10,
-        "november" | "nov" => 11,
-        "december" | "dec" => 12,
-        _ => return None,
-    };
-    let day: u32 = parts[1].parse().ok()?;
-
-    let time_upper = time_str.to_uppercase();
-    let is_pm = time_upper.contains("PM");
-    let time_digits = time_upper.trim_end_matches("AM").trim_end_matches("PM");
-    let time_parts: Vec<&str> = time_digits.split(':').collect();
-    if time_parts.len() != 2 {
-        return None;
-    }
-    let mut hour: u32 = time_parts[0].parse().ok()?;
-    let min: u32 = time_parts[1].parse().ok()?;
-
-    if hour == 12 {
-        hour = if is_pm { 12 } else { 0 };
-    } else if is_pm {
-        hour += 12;
-    }
-
-    let date = NaiveDate::from_ymd_opt(year, month, day)?;
-    let time = NaiveTime::from_hms_opt(hour, min, 0)?;
-    let naive_dt = date.and_time(time);
-
-    // EDT (Mar-Nov) = UTC-4, EST = UTC-5
-    let et_offset = if month >= 3 && month <= 11 {
-        chrono::FixedOffset::west_opt(4 * 3600)?
-    } else {
-        chrono::FixedOffset::west_opt(5 * 3600)?
-    };
-
-    let et_dt = et_offset.from_local_datetime(&naive_dt).single()?;
-    Some(et_dt.timestamp_millis())
+#[cfg(test)]
+mod tests {
+    // Tests omitted since we directly use SDK's end_date field instead of manual string parsing
 }
