@@ -10,8 +10,8 @@ pub async fn find_next_5m_market(
     gamma_client: &polymarket_client_sdk::gamma::Client,
     asset: CryptoAsset,
 ) -> Result<Option<Market5m>> {
-    use polymarket_client_sdk::gamma::types::request::SearchRequest;
     use chrono::Utc;
+    use polymarket_client_sdk::gamma::types::request::SearchRequest;
 
     let query = match asset {
         CryptoAsset::BTC => "Bitcoin",
@@ -46,10 +46,14 @@ pub async fn find_next_5m_market(
             }
 
             let question = m.question.as_deref().unwrap_or("");
-            
+
             // Check if it is a Daily market (e.g. contains "price of Bitcoin be" or "price of Ethereum be")
-            let is_btc_price_market = asset == CryptoAsset::BTC && (question.contains("price of Bitcoin be") || question.contains("Bitcoin ($BTC) price be"));
-            let is_eth_price_market = asset == CryptoAsset::ETH && (question.contains("price of Ethereum be") || question.contains("Ethereum ($ETH) price be"));
+            let is_btc_price_market = asset == CryptoAsset::BTC
+                && (question.contains("price of Bitcoin be")
+                    || question.contains("Bitcoin ($BTC) price be"));
+            let is_eth_price_market = asset == CryptoAsset::ETH
+                && (question.contains("price of Ethereum be")
+                    || question.contains("Ethereum ($ETH) price be"));
             if !is_btc_price_market && !is_eth_price_market {
                 continue;
             }

@@ -50,7 +50,7 @@ Stop-loss slippage: set -45% but often triggers at -87%~-99% (3min scan too slow
 ### Phase A: Smart Money Exit Logic Overhaul
 - [x] A.1 Remove whale-exit auto-close — log only, don't close position
 - [x] A.2 Add self-managed exits: TP +20%, trailing +15%/40%, time-stop 7d
-- [ ] A.3 Fix stop-loss scan interval: 180s → 60s for SM positions (deferred — needs separate timer)
+- [x] A.3 Fix stop-loss scan interval: 180s → 60s for SM positions (completed via decoupled 60s timer)
 - [x] A.4 Raise min_wallets: 2 → 3 (monitor.json updated)
 - [x] A.5 Reduce market horizon: 30d → 14d
 - [ ] A.6 Add whale-exit-as-entry trigger (fade experiment, separate tag)
@@ -79,6 +79,13 @@ After 1 month live: SM 66% WR / +$276, Crypto 50% WR / +$22.5 (random region).
 - [ ] C.2 Backtest Phase A rules against historical SM data
 - [ ] C.3 Backtest Phase B rules against historical crypto data
 - [ ] C.4 Run new config 48h, compare with old results
+
+### Strategy Queue (2026-06-07)
+- [x] Q.1 Record all implemented, queued, and proposed trading strategies in `docs/new-trading-strategies.md`
+- [x] Q.2 Mirror the strategy register in `research/new-trading-strategies.md`
+- [x] Q.3 Update `docs/smart-money-system.md` to match current Sprint 13 paper-trading rules
+- [ ] Q.4 Decide canonical strategy-doc location (`docs/` vs `research/`) to avoid duplicate drift
+- [ ] Q.5 Add strategy result ledger with WR/ROI/sample size/disable criteria per strategy
 
 ### Pending from Sprint 12
 - [ ] Merge `feature/5m-crypto-trade` → main (after Sprint 13 Phase A+B stable)

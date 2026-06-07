@@ -502,7 +502,7 @@ impl OkxFeed {
         #[serde(rename_all = "camelCase")]
         struct LiqDetail {
             side: String,
-            bkPx: String,
+            bk_px: String,
             sz: String,
             ts: String,
         }
@@ -521,7 +521,7 @@ impl OkxFeed {
         for wrapper in resp.data {
             for d in wrapper.details {
                 if let (Ok(price), Ok(qty), Ok(time)) = (
-                    d.bkPx.parse::<f64>(),
+                    d.bk_px.parse::<f64>(),
                     d.sz.parse::<f64>(),
                     d.ts.parse::<i64>(),
                 ) {

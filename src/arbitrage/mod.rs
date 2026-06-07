@@ -56,7 +56,9 @@ pub async fn scan_complement_arbitrage(
         .iter()
         .filter(|m| {
             m.active == Some(true)
-                && m.clob_token_ids.as_ref().map_or(false, |ids| ids.len() == 2)
+                && m.clob_token_ids
+                    .as_ref()
+                    .map_or(false, |ids| ids.len() == 2)
                 && m.outcomes.as_ref().map_or(false, |o| o.len() == 2)
         })
         .collect();
@@ -161,8 +163,20 @@ pub async fn scan_favorite_longshot_bias(
         if let (Some(ids), Some(outcomes)) = (&m.clob_token_ids, &m.outcomes) {
             for (idx, &token_id) in ids.iter().enumerate() {
                 if idx < outcomes.len() {
-                    requests.push(OrderBookSummaryRequest::builder().token_id(token_id).build());
-                    token_info.insert(token_id, (m.id.clone(), m.question.clone().unwrap_or_default(), outcomes[idx].clone(), m.volume_num.unwrap_or(Decimal::ZERO)));
+                    requests.push(
+                        OrderBookSummaryRequest::builder()
+                            .token_id(token_id)
+                            .build(),
+                    );
+                    token_info.insert(
+                        token_id,
+                        (
+                            m.id.clone(),
+                            m.question.clone().unwrap_or_default(),
+                            outcomes[idx].clone(),
+                            m.volume_num.unwrap_or(Decimal::ZERO),
+                        ),
+                    );
                 }
             }
         }
@@ -179,7 +193,10 @@ pub async fn scan_favorite_longshot_bias(
     for book in books {
         let token_id = book.asset_id;
         // Use best ask price (or midpoint if empty asks)
-        let price = book.asks.first().map(|a| a.price)
+        let price = book
+            .asks
+            .first()
+            .map(|a| a.price)
             .or_else(|| book.bids.first().map(|b| b.price))
             .unwrap_or(Decimal::ZERO);
 

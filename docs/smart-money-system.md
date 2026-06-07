@@ -144,15 +144,21 @@ polymarket smart crypto status              # crypto paper trade PnL
 
 ## Paper Trading Features
 
-- **Stop-loss**: -45% (configurable)
-- **Trailing stop**: peak +30%, drawdown 50%
+- **Smart Money entries**: multi-wallet convergence by default; individual signal mode only when `min_wallets <= 1`
+- **Confirmation delay**: 10-minute queue for triggers before paper entry
+- **Entry price filter**: trigger price `0.15-0.80`, rechecked after queue delay
+- **Near-resolution guard**: skip markets resolving within 24h
+- **Smart Money take-profit**: +20% ROI
+- **Smart Money stop-loss**: -25% ROI, checked by a dedicated 60-second exit timer
+- **Smart Money trailing stop**: activate at +15% ROI, close after 40% drawdown from peak ROI
+- **Smart Money time-stop**: close positions older than 7 days if ROI is below +5%
+- **Market-closed reconciliation**: settle closed markets with Gamma settlement quote when live price is missing
 - **Entry/exit reason tracking**: per-trade audit trail
-- **Confirmation delay**: 10-minute queue for triggers
-- **Price filter**: 0.15-0.80 range
 - **Anti-hedge**: skip opposing positions
 - **Exclude keywords**: 98 noise filters (sports, etc.)
-- **30-day horizon filter**: skip near-expiry markets
+- **14-day horizon filter**: only trade markets resolving within 14 days
 - **Rate limit**: per-hour and per-day caps
+- **Crypto 5m strategy**: 7-component multi-exchange signal, ET 08:00-20:00 only, min confidence 0.6, tiered sizing at 0.65/0.75
 
 ---
 

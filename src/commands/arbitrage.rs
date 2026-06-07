@@ -43,7 +43,8 @@ pub async fn execute(
                 println!("  Target: Sum of YES/NO Best Ask prices < $1.00\n");
             }
 
-            let opportunities = arbitrage::scan_complement_arbitrage(gamma_client, clob_client, limit).await?;
+            let opportunities =
+                arbitrage::scan_complement_arbitrage(gamma_client, clob_client, limit).await?;
 
             match output {
                 OutputFormat::Table => print_complement_table(&opportunities),
@@ -59,7 +60,8 @@ pub async fn execute(
                 println!("  Longshots:  $0.01 - $0.05 (systematically overvalued)\n");
             }
 
-            let opportunities = arbitrage::scan_favorite_longshot_bias(gamma_client, clob_client, limit).await?;
+            let opportunities =
+                arbitrage::scan_favorite_longshot_bias(gamma_client, clob_client, limit).await?;
 
             match output {
                 OutputFormat::Table => print_bias_table(&opportunities),

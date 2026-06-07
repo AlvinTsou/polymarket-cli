@@ -1,7 +1,7 @@
+use crate::arbitrage::{ArbOpportunity, FLBOpportunity};
+use crate::output::{format_decimal, truncate};
 use tabled::settings::Style;
 use tabled::{Table, Tabled};
-use crate::output::{format_decimal, truncate};
-use crate::arbitrage::{ArbOpportunity, FLBOpportunity};
 
 #[derive(Tabled)]
 struct ComplementRow {
