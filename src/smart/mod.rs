@@ -1,7 +1,9 @@
 pub mod odds;
 pub mod scorer;
 pub mod signals;
+pub mod sizing;
 pub mod store;
+pub mod toxicity;
 pub mod tracker;
 
 use chrono::{DateTime, Utc};

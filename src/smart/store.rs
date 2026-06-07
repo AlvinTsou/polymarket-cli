@@ -284,6 +284,22 @@ pub fn today_spend() -> Result<f64> {
         .sum())
 }
 
+/// Sum of Smart Money paper USDC spent today, excluding crypto paper trades.
+pub fn today_smart_paper_spend() -> Result<f64> {
+    let records = load_follow_records()?;
+    let today = chrono::Utc::now().date_naive();
+    Ok(records
+        .iter()
+        .filter(|r| r.dry_run && r.timestamp.date_naive() == today)
+        .filter(|r| {
+            !r.entry_reason
+                .as_deref()
+                .is_some_and(|reason| reason.starts_with("crypto:"))
+        })
+        .map(|r| r.amount_usdc)
+        .sum())
+}
+
 // ── Odds watches ────────────────────────────────────────────────
 
 pub fn load_odds_watches() -> Result<Vec<OddsWatch>> {

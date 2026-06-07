@@ -14,7 +14,7 @@ use crate::output::smart::{
 use crate::smart::tracker::PositionChange;
 use crate::smart::{
     AggregatedSignal, FollowRecord, OddsWatch, PriceSnapshot, Signal, SignalConfidence, SmartScore,
-    TelegramConfig, WatchedWallet, odds, scorer, signals, store, tracker,
+    TelegramConfig, WatchedWallet, odds, scorer, signals, sizing, store, tracker,
 };
 
 #[derive(Args)]
@@ -4667,7 +4667,7 @@ async fn cmd_monitor(
 
                     // Create paper trades from confirmed triggers
                     if !confirmed.is_empty() {
-                        let today_spent = store::today_spend().unwrap_or(0.0);
+                        let today_spent = store::today_smart_paper_spend().unwrap_or(0.0);
                         let mut spent = 0.0f64;
 
                         let existing_follows = store::load_follow_records().unwrap_or_default();
@@ -4702,10 +4702,6 @@ async fn cmd_monitor(
                                 eprintln!("  GROUP-LIMIT-EXEC ({gc}/{} open): {}", config.max_per_group, trigger.market_title);
                                 continue;
                             }
-                            if today_spent + spent + config.amount > config.max_per_day {
-                                break;
-                            }
-
                             // Use latest known price instead of stale trigger price (queued 10min ago)
                             let current_price = store::current_price_map()
                                 .unwrap_or_default()
@@ -4716,6 +4712,26 @@ async fn cmd_monitor(
                             // Re-apply price filter: price may have drifted out of 0.15-0.80 during queue wait
                             if current_price < 0.15 || current_price > 0.80 {
                                 eprintln!("  PRICE-DRIFT: {} now {:.4} (out of 0.15-0.80)", trigger.market_title, current_price);
+                                continue;
+                            }
+
+                            let remaining_budget = config.max_per_day - today_spent - spent;
+                            let sizing_price = match trigger.direction {
+                                crate::smart::SignalDirection::Buy => current_price,
+                                crate::smart::SignalDirection::Sell => 1.0 - current_price,
+                            };
+                            let trade_amount = sizing::smart_money_position_size(
+                                &trigger.confidence,
+                                sizing_price,
+                                config.max_per_day,
+                                config.amount,
+                                remaining_budget,
+                            );
+                            if trade_amount <= 0.0 {
+                                eprintln!(
+                                    "  KELLY-SKIP: {} conf={} price={:.4}",
+                                    trigger.market_title, trigger.confidence, current_price
+                                );
                                 continue;
                             }
 
@@ -4741,7 +4757,7 @@ async fn cmd_monitor(
                                 asset: trigger.asset.clone(),
                                 outcome: trigger.outcome.clone(),
                                 side: side_str,
-                                amount_usdc: config.amount,
+                                amount_usdc: trade_amount,
                                 price: current_price,
                                 dry_run: true,
                                 order_id: None,
@@ -4751,7 +4767,10 @@ async fn cmd_monitor(
                                 exit_price: None,
                                 realized_pnl: None,
                                 position_id: Some(pos_id),
-                                entry_reason: Some(format!("monitor: {}", trigger.reason)),
+                                entry_reason: Some(format!(
+                                    "monitor: {} | kelly-size ${:.2} cap ${:.2}",
+                                    trigger.reason, trade_amount, config.amount
+                                )),
                                 exit_reason: None,
                             };
                             if let Err(e) = store::append_follow_record(&record) {
@@ -4762,7 +4781,7 @@ async fn cmd_monitor(
                             open_markets.insert(trigger.condition_id.clone());
                             *exec_group_counts.entry(gk).or_insert(0) += 1;
                             paper_count += 1;
-                            spent += config.amount;
+                            spent += trade_amount;
                         }
                     }
 
@@ -6502,6 +6521,8 @@ async fn cmd_crypto_monitor(
                     continue;
                 }
 
+                let mut cycle_spent = 0.0f64;
+
                 for &asset in &assets {
                     let (candles_res, agg_spot, agg_futures) = tokio::join!(
                         feed.fetch_klines(asset, "1m", 30),
@@ -6563,17 +6584,17 @@ async fn cmd_crypto_monitor(
                         _ => continue,
                     };
 
-                    // Two-tier sizing: scale position with signal confidence
-                    let trade_amount = if signal.confidence >= 0.75 {
-                        (amount * 2.0).min(max_per_day - daily_spent)
-                    } else if signal.confidence >= 0.65 {
-                        (amount * 1.5).min(max_per_day - daily_spent)
-                    } else {
-                        amount.min(max_per_day - daily_spent)
-                    };
+                    let entry_price = 0.50;
+                    let trade_amount = sizing::fractional_kelly_position_size(sizing::KellyInput {
+                        win_probability: signal.confidence,
+                        market_price: entry_price,
+                        bankroll: max_per_day,
+                        max_per_trade: amount,
+                        remaining_budget: max_per_day - daily_spent - cycle_spent,
+                        fraction: sizing::DEFAULT_KELLY_FRACTION,
+                    });
                     if trade_amount <= 0.0 { eprint!("{asset} budget, "); continue; }
 
-                    let entry_price = 0.50;
                     let record = FollowRecord {
                         timestamp: now,
                         signal_id: format!("crypto-{}-{}", asset, now.timestamp()),
@@ -6592,8 +6613,8 @@ async fn cmd_crypto_monitor(
                         exit_price: None,
                         realized_pnl: None,
                         position_id: Some(format!("crypto:{}", market.condition_id)),
-                        entry_reason: Some(format!("crypto:momentum:{} {} conf={:.0}% score={:+.3}",
-                            asset, signal.direction, signal.confidence * 100.0, signal.components.raw_score)),
+                        entry_reason: Some(format!("crypto:momentum:{} {} conf={:.0}% score={:+.3} kelly-size=${:.2}",
+                            asset, signal.direction, signal.confidence * 100.0, signal.components.raw_score, trade_amount)),
                         exit_reason: None,
                     };
 
@@ -6603,6 +6624,7 @@ async fn cmd_crypto_monitor(
                     }
 
                     trades_this_hour.push(now);
+                    cycle_spent += trade_amount;
                     let window_mins = secs_until_end / 60;
                     eprintln!("\n  TRADE: {asset} {} {} @ {:.2} (${:.2}) conf={:.0}% score={:+.3} window={window_mins}m",
                         signal.direction, market.question, entry_price, trade_amount, signal.confidence * 100.0,
