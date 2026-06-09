@@ -8,9 +8,16 @@ This research maps out the next generation of quantitative, statistical, and beh
 
 ---
 
-## 1. PMCC Strategy Register (2026-06-07)
+## 1. PMCC Strategy Register (2026-06-09)
 
 This register records every current or queued trading strategy in PMCC. It separates shipped logic from queued experiments and research-only ideas so strategy changes can be reviewed without digging through `src/commands/smart.rs`, `src/arbitrage/mod.rs`, and `src/crypto/momentum.rs`.
+
+Canonical docs:
+
+- `docs/new-trading-strategies.md` is the canonical strategy register.
+- `docs/strategy-result-ledger.md` is the canonical performance and disable-criteria ledger.
+- `research/trading-strategy-research.md` keeps source-backed research notes and future ideas.
+- `research/new-trading-strategies.md` is an index/pointer only; do not mirror this register there.
 
 ### Implemented / Active
 
@@ -29,10 +36,10 @@ This register records every current or queued trading strategy in PMCC. It separ
 
 | Priority | Strategy | Action Needed | Notes |
 |----------|----------|---------------|-------|
-| P0 | CLOB midpoint as crypto 8th signal component | Add CLOB midpoint agreement/disagreement filter before crypto paper entry | Intended to reduce noisy 5m momentum trades. If CLOB disagrees with direction, skip; if aligned, confidence boost. |
-| P0 | Whale-exit-as-entry fade experiment | Add separate paper-only trigger/tag `fade-whale-exit` | Current whale exits are logged only. Experiment should enter after whale loss/panic exit and track separately. |
-| P1 | Strategy result ledger | Add markdown/JSON summary of each strategy's live paper-trade WR, ROI, sample size, and disable criteria | Prevent strategy drift and make future tuning evidence-based. |
-| P1 | Backtest Sprint 13 rules | Export paper trades and backtest Smart Money exit rules plus crypto filters | Current todo already includes C.1-C.4. Keep results linked from this register. |
+| P0 | Current paper-trade analysis refresh | Re-run Smart Money and crypto paper-trade summaries, then update `docs/strategy-result-ledger.md` | Required before building more entry logic. |
+| P1 | CLOB midpoint as crypto 8th signal component | Add CLOB midpoint agreement/disagreement filter before crypto paper entry only if current crypto ledger still shows weak but salvageable edge | Intended to reduce noisy 5m momentum trades. If CLOB disagrees with direction, skip; if aligned, confidence boost. |
+| P1 | Whale-exit-as-entry fade experiment | Add separate paper-only trigger/tag `fade-whale-exit` only after current Smart Money ledger supports another entry experiment | Current whale exits are logged only. Experiment should enter after whale loss/panic exit and track separately. |
+| P1 | Backtest Sprint 13 rules | Export paper trades and backtest Smart Money exit rules plus crypto filters | Current todo already includes C.1-C.4. Keep results linked from the ledger. |
 | P2 | Cross-Platform Arbitrage | Build Polymarket-Kalshi matching and capital model | Research-only until market mapping and fees are handled. |
 | P2 | CLOB Market Maker | Prototype inventory-aware quoting | Research-only; requires order placement safety, inventory limits, and cancellation logic. |
 | P2 | Bayesian Polls / Sentiment Pipeline | Define source ingestion, posterior model, and execution threshold | Research-only; needs source reliability scoring and latency tests. |

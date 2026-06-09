@@ -18,10 +18,10 @@
 ## Session State
 
 - **timestamp**: 2026-06-09T00:00:00+08:00
-- **phase**: sync after Sprint 13 follow-up commits
-- **last task**: task-state refresh after `main` reached `41861c2`
+- **phase**: strategy docs canonicalization
+- **last task**: canonical strategy register and result ledger refresh
 - **blockers**: none
-- **next actions**: choose canonical strategy-doc location → add strategy result ledger → re-run current paper-trade analysis → decide whether A.6/B.3 still have enough edge to build
+- **next actions**: run current paper-trade analysis → update `docs/strategy-result-ledger.md` → decide whether A.6/B.3 still have enough edge to build
 
 ## Current State
 
@@ -82,11 +82,11 @@ After 1 month live: SM 66% WR / +$276, Crypto 50% WR / +$22.5 (random region).
 
 ### Strategy Queue (2026-06-07)
 - [x] Q.1 Record all implemented, queued, and proposed trading strategies in `docs/new-trading-strategies.md`
-- [x] Q.2 Mirror the strategy register in `research/new-trading-strategies.md`
+- [x] Q.2 Mirror the strategy register in `research/new-trading-strategies.md` (superseded by Q.4; file is now an index/pointer)
 - [x] Q.3 Update `docs/smart-money-system.md` to match current Sprint 13 paper-trading rules
-- [ ] Q.4 Decide canonical strategy-doc location (`docs/` vs `research/`) to avoid duplicate drift
-- [ ] Q.5 Add strategy result ledger with WR/ROI/sample size/disable criteria per strategy
-- [ ] Q.6 Refresh this queue after Q.5 so A.6/B.3 decisions are evidence-backed, not carried over from stale May assumptions
+- [x] Q.4 Decide canonical strategy-doc location (`docs/` register + ledger; `research/` index/notes only)
+- [x] Q.5 Add strategy result ledger with WR/ROI/sample size/disable criteria per strategy (`docs/strategy-result-ledger.md`)
+- [x] Q.6 Refresh this queue after Q.5 so A.6/B.3 decisions are evidence-backed, not carried over from stale May assumptions
 
 ### Pending from Sprint 12
 - [x] Merge `feature/5m-crypto-trade` → main (main now includes Sprint 13 and later follow-up commits)
