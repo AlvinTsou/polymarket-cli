@@ -36,7 +36,7 @@ Canonical docs:
 
 | Priority | Strategy | Action Needed | Notes |
 |----------|----------|---------------|-------|
-| P0 | Current paper-trade analysis refresh | Re-run Smart Money and crypto paper-trade summaries, then update `docs/strategy-result-ledger.md` | Required before building more entry logic. |
+| P0 | Current sample accumulation and second refresh | Let Smart Money reach a meaningful current sample, then re-run ledger refresh commands | 2026-06-09 refresh found only 8 Smart Money closed trades and no crypto paper trades; do not build more entry logic from that sample. |
 | P1 | CLOB midpoint as crypto 8th signal component | Add CLOB midpoint agreement/disagreement filter before crypto paper entry only if current crypto ledger still shows weak but salvageable edge | Intended to reduce noisy 5m momentum trades. If CLOB disagrees with direction, skip; if aligned, confidence boost. |
 | P1 | Whale-exit-as-entry fade experiment | Add separate paper-only trigger/tag `fade-whale-exit` only after current Smart Money ledger supports another entry experiment | Current whale exits are logged only. Experiment should enter after whale loss/panic exit and track separately. |
 | P1 | Backtest Sprint 13 rules | Export paper trades and backtest Smart Money exit rules plus crypto filters | Current todo already includes C.1-C.4. Keep results linked from the ledger. |

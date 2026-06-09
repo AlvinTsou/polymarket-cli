@@ -18,10 +18,10 @@
 ## Session State
 
 - **timestamp**: 2026-06-09T00:00:00+08:00
-- **phase**: strategy docs canonicalization
-- **last task**: canonical strategy register and result ledger refresh
+- **phase**: current paper-trade analysis refreshed
+- **last task**: ran current `smart roi`, `smart crypto status`, and `smart reconcile --dry-run`
 - **blockers**: none
-- **next actions**: run current paper-trade analysis → update `docs/strategy-result-ledger.md` → decide whether A.6/B.3 still have enough edge to build
+- **next actions**: accumulate more current sample → update `docs/strategy-result-ledger.md` again → decide whether A.6/B.3 still have enough edge to build
 
 ## Current State
 
@@ -44,6 +44,14 @@
 
 Top exit reasons: whale-exit (104), stop-loss (65), trailing-stop (16), 5m-resolved (14)
 Stop-loss slippage: set -45% but often triggers at -87%~-99% (3min scan too slow)
+
+## Current Paper Trade Refresh (2026-06-09)
+
+| Category | Current Local Sample | PnL / ROI | Win Rate | Verdict |
+|----------|----------------------|-----------|----------|---------|
+| Smart Money | 8 closed, 0 open | -$2.9992 / -3.7490% | 50.0% | Too small to justify new entry experiments |
+| Crypto | 0 paper trades | N/A | N/A | No current sample; verify/restart only if crypto pivot remains desired |
+| Reconcile dry-run | 0 open dry-run positions scanned | $0.00 delta | N/A | No settled zombie cleanup needed in current local store |
 
 ## Sprint 13: Strategy Overhaul
 
@@ -72,7 +80,8 @@ After 1 month live: SM 66% WR / +$276, Crypto 50% WR / +$22.5 (random region).
 - [x] B.10 Update LaunchAgent plist (amount=5, min-confidence=0.6)
 - [x] B.11 cargo build --release
 - [x] B.12 launchctl reload com.pmcc.crypto, new PID 47268 with new args
-- [ ] B.13 Re-run current paper trade analysis, compare WR/ROI after the later crypto pivot and sizing/toxicity changes
+- [x] B.13 Re-run current paper trade analysis, compare WR/ROI after the later crypto pivot and sizing/toxicity changes
+- [ ] B.14 Accumulate enough current sample before deciding on CLOB midpoint component or crypto restart/tuning
 
 ### Phase C: Backtest & Validation
 - [ ] C.1 Export 234 paper trades to CSV with signal components
