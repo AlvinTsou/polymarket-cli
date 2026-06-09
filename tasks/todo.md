@@ -17,20 +17,20 @@
 
 ## Session State
 
-- **timestamp**: 2026-05-05T00:00:00+08:00
-- **phase**: implementing
-- **last task**: Sprint 13 Phase B follow-up — tighten crypto 5m defaults based on 1-month data
+- **timestamp**: 2026-06-09T00:00:00+08:00
+- **phase**: sync after Sprint 13 follow-up commits
+- **last task**: task-state refresh after `main` reached `41861c2`
 - **blockers**: none
-- **next actions**: Run 48h after restart → re-evaluate WR/ROI → consider B.3 (CLOB component) if no improvement
+- **next actions**: choose canonical strategy-doc location → add strategy result ledger → re-run current paper-trade analysis → decide whether A.6/B.3 still have enough edge to build
 
 ## Current State
 
-- **Branch**: `feature/5m-crypto-trade` — uncommitted Sprint 13 changes (not yet pushed)
-- **Signal**: 7-component, 4 exchanges (Binance + OKX + Hyperliquid + Bybit)
-- **Dashboard**: localhost:3456 (LaunchAgent), SM + Crypto split
+- **Branch**: `main`, clean and synced with `origin/main` at `41861c2`
+- **Signal**: Sprint 13 rules plus later crypto daily range/strike pivot and strategy sizing/toxicity research
+- **Dashboard**: localhost:3456 (LaunchAgent), SM + Crypto split (runtime not re-verified in this task sync)
 - **Issues**: 19/19 resolved (14 Night Shift + 4 code review + 1 WONTFIX)
-- **SM Monitor**: PID 88502, Sprint 13 rules (no whale-exit close, TP/trailing/time-stop, min_wallets=3)
-- **Crypto Monitor**: PID 88665, BTC, conf 0.50 default, tiered sizing, 08-20 ET only
+- **SM Monitor**: Sprint 13 rules in code (no whale-exit close, TP/trailing/time-stop, min_wallets=3) plus settled-market reconcile path
+- **Crypto Monitor**: tightened sizing/confidence defaults exist in code; live PID/LaunchAgent args need re-check before relying on runtime state
 - **Paper trades**: cleared — fresh start from 2026-04-04 18:13 UTC
 - **Backup**: `~/.config/polymarket/smart/follows.jsonl.bak.sprint12-20260404` (236 trades)
 
@@ -72,13 +72,13 @@ After 1 month live: SM 66% WR / +$276, Crypto 50% WR / +$22.5 (random region).
 - [x] B.10 Update LaunchAgent plist (amount=5, min-confidence=0.6)
 - [x] B.11 cargo build --release
 - [x] B.12 launchctl reload com.pmcc.crypto, new PID 47268 with new args
-- [ ] B.13 Wait 48h, re-run paper trade analysis, compare WR/ROI
+- [ ] B.13 Re-run current paper trade analysis, compare WR/ROI after the later crypto pivot and sizing/toxicity changes
 
 ### Phase C: Backtest & Validation
 - [ ] C.1 Export 234 paper trades to CSV with signal components
 - [ ] C.2 Backtest Phase A rules against historical SM data
 - [ ] C.3 Backtest Phase B rules against historical crypto data
-- [ ] C.4 Run new config 48h, compare with old results
+- [ ] C.4 Compare current config results with old Sprint 13 baseline before adding more entry logic
 
 ### Strategy Queue (2026-06-07)
 - [x] Q.1 Record all implemented, queued, and proposed trading strategies in `docs/new-trading-strategies.md`
@@ -86,6 +86,7 @@ After 1 month live: SM 66% WR / +$276, Crypto 50% WR / +$22.5 (random region).
 - [x] Q.3 Update `docs/smart-money-system.md` to match current Sprint 13 paper-trading rules
 - [ ] Q.4 Decide canonical strategy-doc location (`docs/` vs `research/`) to avoid duplicate drift
 - [ ] Q.5 Add strategy result ledger with WR/ROI/sample size/disable criteria per strategy
+- [ ] Q.6 Refresh this queue after Q.5 so A.6/B.3 decisions are evidence-backed, not carried over from stale May assumptions
 
 ### Pending from Sprint 12
-- [ ] Merge `feature/5m-crypto-trade` → main (after Sprint 13 Phase A+B stable)
+- [x] Merge `feature/5m-crypto-trade` → main (main now includes Sprint 13 and later follow-up commits)

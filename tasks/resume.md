@@ -100,31 +100,30 @@ if current <= 0.0 { continue; }  // 跳過 price=0 的部位 → 永不平倉
 
 | 觸發 | 狀態 | 目的 |
 |---|---|---|
-| 進場守門 NEAR-RESOLUTION on entry | ✅ deployed in `f9ba1ee` | 阻擋 24h 內結算市場新進場 |
-| 持倉清算 market-closed sweep | ❌ pending | 已結算市場的舊持倉收尾 |
-| 預先平倉 pre-resolution close | ❌ pending (optional) | 結算前主動平倉避 atomic settle |
+| 進場守門 NEAR-RESOLUTION on entry | done: deployed in `f9ba1ee` | 阻擋 24h 內結算市場新進場 |
+| 持倉清算 market-closed sweep | done: deployed in `f9d5cbb` | 已結算市場的舊持倉收尾 |
+| 預先平倉 pre-resolution close | pending (optional) | 結算前主動平倉避 atomic settle |
 
-## Next steps (proposed, awaiting user confirmation)
+## Follow-up status (updated 2026-06-09)
 
-### A. 一次性 reconcile 指令（建議先做）
-- 新增 `polymarket smart reconcile` 子命令
+### A. 一次性 reconcile 指令（done）
+- `polymarket smart reconcile` 已新增
 - 掃所有 dry-run open 部位 → 查 gamma → `closed=true` 則以 `outcomePrices` 平倉
-- 對現有 24 zombie 一次清乾淨；同時是 auto-close 的活體測試
+- 已作為 settled-position cleanup 的手動入口
 
-### B. 永久內建在 monitor cycle
-- 修 `src/commands/smart.rs:4366` 的 `continue`：price=0 時改查 gamma
-- 若 closed → 平倉 with reason `market-closed: settled @ X`
-- Cache per-cycle 避免重複呼叫
+### B. 永久內建在 monitor cycle（done）
+- `price <= 0` / missing live price 不再直接讓 closed market 永久 skip
+- 若 gamma 顯示 closed → 平倉 with reason `market-closed: settled @ X`
+- 使用 per-cycle cache 避免同一輪重複呼叫
 
-### C. (Optional) pre-resolution close
-- 不建議優先做；先觀察 A+B 效果
+### C. (Optional) pre-resolution close（still pending）
+- 不建議優先做；先用 current paper-trade analysis 與 strategy result ledger 判斷是否值得新增
 
 ## Files / artifacts
 
 - Patch slice tool used: `git diff` → `sed -n '1,60p'` → `git apply --cached` (skip unrelated crypto WIP at `src/commands/smart.rs:6336+` and `src/crypto/market.rs`)
-- Working tree still has WIP from previous session (not touched)
-- Untracked: `CONTEXT.md` (not touched)
-- `tasks/` existing files: issues.md, lessons.md, plan.md, todo.md (not modified this session)
+- Stale note cleanup: working tree is now clean on `main` and synced with `origin/main` at `41861c2`
+- `tasks/todo.md` refreshed on 2026-06-09 to remove stale branch/runtime assumptions
 
 ## Reference data points
 
