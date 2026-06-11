@@ -4133,6 +4133,14 @@ fn split_keywords(s: Option<&str>) -> Vec<String> {
     .unwrap_or_default()
 }
 
+fn short_address(address: &str) -> String {
+    if address.len() > 14 {
+        format!("{}...{}", &address[..8], &address[address.len() - 4..])
+    } else {
+        address.to_string()
+    }
+}
+
 /// Check if a market resolves within `max_days` days based on its title.
 /// Returns true (allow) if no date found or if within the window.
 fn market_within_horizon(title: &str, max_days: i64) -> bool {
@@ -4470,6 +4478,7 @@ async fn cmd_monitor(
     }
 
     let interval_dur = std::time::Duration::from_secs(config.interval_secs);
+    let wallet_scan_timeout = std::time::Duration::from_secs(20);
 
     // Print config summary
     println!("=== PMCC Monitor ===");
@@ -4536,12 +4545,30 @@ async fn cmd_monitor(
                     if wallet.disabled == Some(true) {
                         continue;
                     }
-                    match tracker::scan_wallet(client, &wallet.address).await {
-                        Ok((changes, _snapshot)) => {
+                    match tokio::time::timeout(
+                        wallet_scan_timeout,
+                        tracker::scan_wallet(client, &wallet.address),
+                    )
+                    .await
+                    {
+                        Ok(Ok((changes, _snapshot))) => {
                             let sigs = signals::generate_signals(wallet, &changes);
                             all_signals.extend(sigs);
                         }
-                        Err(_) => scan_errors += 1,
+                        Ok(Err(e)) => {
+                            scan_errors += 1;
+                            if scan_errors <= 5 {
+                                let tag = wallet.tag.as_deref().unwrap_or("untagged");
+                                eprint!("  SCAN-ERROR {tag} {}: {e};", short_address(&wallet.address));
+                            }
+                        }
+                        Err(_) => {
+                            scan_errors += 1;
+                            if scan_errors <= 5 {
+                                let tag = wallet.tag.as_deref().unwrap_or("untagged");
+                                eprint!("  SCAN-TIMEOUT {tag} {};", short_address(&wallet.address));
+                            }
+                        }
                     }
                     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                 }
@@ -4735,10 +4762,10 @@ async fn cmd_monitor(
                                 continue;
                             }
 
-                            // Resolution-time guard: skip markets resolving within 24h.
-                            // Polymarket settles atomically (price -> 0 or 1), so the -45%
-                            // stop-loss cannot catch a settlement event — block at entry instead.
-                            if let Some(true) = market_resolves_within_hours(&trigger.condition_id, 24).await {
+                            // Resolution-time guard: skip markets resolving within 72h.
+                            // Polymarket settles atomically (price -> 0 or 1), so stop-loss
+                            // cannot catch a settlement event — block at entry instead.
+                            if let Some(true) = market_resolves_within_hours(&trigger.condition_id, 72).await {
                                 eprintln!("  NEAR-RESOLUTION (skip): {}", trigger.market_title);
                                 continue;
                             }
@@ -4880,9 +4907,9 @@ async fn cmd_monitor(
 
                     // Self-managed exits: take-profit, stop-loss, trailing-stop, time-stop
                     let take_profit_pct = 20.0f64;   // close at +20% ROI
-                    let stop_loss_pct = -25.0f64;
+                    let stop_loss_pct = -20.0f64;
                     let trailing_activate_pct = 15.0f64;  // activate trailing stop after +15% ROI
-                    let trailing_drawdown_pct = 40.0f64;  // close if ROI drops 40% from peak
+                    let trailing_drawdown_pct = 30.0f64;  // close if ROI drops 30% from peak
                     let time_stop_days = 7i64;            // close if open > 7 days
                     let time_stop_min_roi = 5.0f64;       // ... and ROI < +5%
                     let mut peak_roi = store::load_peak_roi().unwrap_or_default();

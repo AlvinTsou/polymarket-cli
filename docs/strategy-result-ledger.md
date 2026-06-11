@@ -1,6 +1,6 @@
 # PMCC Strategy Result Ledger
 
-Last updated: 2026-06-09
+Last updated: 2026-06-10
 
 This is the canonical performance ledger for PMCC strategies. It records sample size, WR, PnL/ROI, disable criteria, and the evidence needed before promoting or expanding a strategy.
 
@@ -22,12 +22,22 @@ Run these before changing entry logic or enabling real-money execution:
 | `smart crypto status` | No crypto paper trades in the current local store |
 | `smart reconcile --dry-run` | `scanned_open_dry_run=0`, `closed=0`, `errors=0`, `total_pnl=0.0` |
 
+## ROI Risk Tuning: 2026-06-10
+
+`docs/trade-history-report.md` merged the current follow store with the 2026-06-02 backup and showed historical Smart Money ROI was primarily dragged down by stop-loss and settlement tails: `Stop-loss` had 216 exits for `-$1261.6094`, `market-closed` had 24 exits for `-$140.58`, while `Take-profit` and `Trailing-stop` were positive. The current code already blocks the worst historical price bands with the `0.15-0.80` entry filter, so the next conservative ROI move is tighter loss containment rather than adding new entry experiments.
+
+Active Smart Money paper rules were tightened:
+
+- Stop-loss: `-25%` -> `-20%`
+- Trailing-stop drawdown: `40%` -> `30%` after `+15%` activation
+- Near-resolution entry guard: `24h` -> `72h`
+
 ## Current Ledger
 
 | Strategy | Mode | Latest Evidence | Sample | WR | PnL / ROI | Decision | Disable / Review Criteria |
 |----------|------|-----------------|--------|----|-----------|----------|---------------------------|
 | Smart Money Multi-Wallet Convergence | Active paper-trade entry | 2026-06-09 CLI refresh after 2026-05-05 follow-up and 2026-05-25 zombie correction | Current local store: 8 closed; historical context: 632 closed in 2026-05-05 follow-up | Current: 50.0%; historical: 66% in 2026-05-05 follow-up | Current: `-$2.9992` / `-3.7490%`; historical zombie-corrected total: +$197.42 / +1.51% on 2026-05-25 | Keep active, but do not add new Smart Money entry experiments on an 8-trade current sample | Review if refreshed sample reaches 50+ closed and ROI <= 0%, WR < 52%, or settled-market reconcile finds recurring zombie positions |
-| Self-Managed Smart Money Exit Manager | Active exit strategy | 2026-06-09 reconcile dry-run found no open dry-run positions to settle | Current local store: 0 scanned open dry-run positions | N/A | Reconcile delta: $0.00 | Keep active; no zombie-position correction needed in the current local store | Review if market-closed sweep repeatedly changes reported PnL materially, or if pre-resolution losses remain common |
+| Self-Managed Smart Money Exit Manager | Active exit strategy | 2026-06-10 risk tuning from `docs/trade-history-report.md` after 2026-06-09 reconcile dry-run found no open dry-run positions to settle | Current local store: 0 scanned open dry-run positions; historical report: 216 stop-loss exits and 24 market-closed exits were the largest negative tails | N/A | Reconcile delta: $0.00; historical stop-loss tail `-$1261.6094` | Keep active with tighter loss containment; no zombie-position correction needed in the current local store | Review after 50+ new Smart Money closed trades; revert or retune if stop-loss frequency rises without improving total ROI |
 | Crypto 5m Multi-Exchange Momentum | Active experimental paper-trade strategy | 2026-06-09 `smart crypto status` returned no crypto paper trades; historical 2026-05-05 follow-up remains the last measured sample | Current local store: 0; historical: 204 closed | Current: N/A; historical: 50% | Current: N/A; historical: +$22.50 / +0.9% | Do not expand until new crypto trades exist; old 5m results are stale after later pivot and sizing/toxicity work | Disable or redesign if refreshed sample >= 100 closed and WR < 55% or ROI is not positive after realistic fees |
 | Crypto daily range/strike pivot | Active experimental paper-trade strategy | 2026-06-09 `smart crypto status` returned no crypto paper trades | 0 | N/A | N/A | Needs live/paper sample before any judgment | Require separate sample bucket before using old crypto results as evidence |
 | Binary Complement Arbitrage Scanner | Implemented scanner | Scanner implemented, no auto-execution ledger yet | N/A | N/A | N/A | Keep scanner-only until execution model is measured | Do not auto-execute without fee, slippage, stale-book, and capital-lock checks |

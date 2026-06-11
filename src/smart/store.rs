@@ -1,11 +1,16 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 
 /// Atomic write: write to a temp file then rename, preventing data corruption on crash.
 fn atomic_write(path: &Path, data: &[u8]) -> Result<()> {
-    let tmp = path.with_extension("tmp");
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    let tmp = path.with_extension(format!("tmp.{}.{}", std::process::id(), nonce));
     fs::write(&tmp, data).with_context(|| format!("failed to write {}", tmp.display()))?;
     fs::rename(&tmp, path)
         .with_context(|| format!("failed to rename {} -> {}", tmp.display(), path.display()))?;
@@ -92,7 +97,7 @@ pub fn load_snapshot(address: &str) -> Result<Option<WalletSnapshot>> {
 pub fn save_snapshot(snapshot: &WalletSnapshot) -> Result<()> {
     let file = snapshots_dir()?.join(format!("{}.json", sanitize_address(&snapshot.address)));
     let json = serde_json::to_string_pretty(snapshot)?;
-    fs::write(&file, json)?;
+    atomic_write(&file, json.as_bytes())?;
     Ok(())
 }
 

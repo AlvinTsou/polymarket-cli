@@ -17,11 +17,11 @@
 
 ## Session State
 
-- **timestamp**: 2026-06-09T00:00:00+08:00
-- **phase**: current paper-trade analysis refreshed
-- **last task**: ran current `smart roi`, `smart crypto status`, and `smart reconcile --dry-run`
+- **timestamp**: 2026-06-10T00:00:00+08:00
+- **phase**: current paper-trade analysis refreshed; ROI risk tuning applied from `docs/trade-history-report.md`
+- **last task**: tightened Smart Money loss containment after reading the trade-history report
 - **blockers**: none
-- **next actions**: accumulate more current sample → update `docs/strategy-result-ledger.md` again → decide whether A.6/B.3 still have enough edge to build
+- **next actions**: rebuild/restart the paper monitor if this tuning should run live → accumulate 50+ current Smart Money closed trades → update `docs/strategy-result-ledger.md` again → decide whether A.6/B.3 still have enough edge to build
 
 ## Current State
 
@@ -29,7 +29,7 @@
 - **Signal**: Sprint 13 rules plus later crypto daily range/strike pivot and strategy sizing/toxicity research
 - **Dashboard**: localhost:3456 (LaunchAgent), SM + Crypto split (runtime not re-verified in this task sync)
 - **Issues**: 19/19 resolved (14 Night Shift + 4 code review + 1 WONTFIX)
-- **SM Monitor**: Sprint 13 rules in code (no whale-exit close, TP/trailing/time-stop, min_wallets=3) plus settled-market reconcile path
+- **SM Monitor**: Sprint 13 rules plus 2026-06-10 ROI risk tuning in code (no whale-exit close, TP +20%, stop-loss -20%, trailing +15%/30%, time-stop, min_wallets=3, 72h near-resolution guard) plus settled-market reconcile path
 - **Crypto Monitor**: tightened sizing/confidence defaults exist in code; live PID/LaunchAgent args need re-check before relying on runtime state
 - **Paper trades**: cleared — fresh start from 2026-04-04 18:13 UTC
 - **Backup**: `~/.config/polymarket/smart/follows.jsonl.bak.sprint12-20260404` (236 trades)
@@ -63,6 +63,7 @@ Stop-loss slippage: set -45% but often triggers at -87%~-99% (3min scan too slow
 - [x] A.5 Reduce market horizon: 30d → 14d
 - [ ] A.6 Add whale-exit-as-entry trigger (fade experiment, separate tag)
 - [x] A.7 Test: restart SM monitor with new config, verified running (PID 88502)
+- [x] A.8 Tighten ROI risk controls from `docs/trade-history-report.md`: stop-loss -20%, trailing drawdown 30%, near-resolution guard 72h
 
 ### Phase B: Crypto 5m Signal Tuning
 - [x] B.1 Raise default min_confidence: 0.30 → 0.50

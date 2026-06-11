@@ -147,10 +147,10 @@ polymarket smart crypto status              # crypto paper trade PnL
 - **Smart Money entries**: multi-wallet convergence by default; individual signal mode only when `min_wallets <= 1`
 - **Confirmation delay**: 10-minute queue for triggers before paper entry
 - **Entry price filter**: trigger price `0.15-0.80`, rechecked after queue delay
-- **Near-resolution guard**: skip markets resolving within 24h
+- **Near-resolution guard**: skip markets resolving within 72h
 - **Smart Money take-profit**: +20% ROI
-- **Smart Money stop-loss**: -25% ROI, checked by a dedicated 60-second exit timer
-- **Smart Money trailing stop**: activate at +15% ROI, close after 40% drawdown from peak ROI
+- **Smart Money stop-loss**: -20% ROI, checked by a dedicated 60-second exit timer
+- **Smart Money trailing stop**: activate at +15% ROI, close after 30% drawdown from peak ROI
 - **Smart Money time-stop**: close positions older than 7 days if ROI is below +5%
 - **Market-closed reconciliation**: settle closed markets with Gamma settlement quote when live price is missing
 - **Entry/exit reason tracking**: per-trade audit trail
