@@ -1,6 +1,14 @@
 
 # PMCC Issues — Night Shift R114 + R03:15
 
+## OPEN
+
+### Paper Monitor (P2)
+
+| ID | Issue | Detail | Found |
+|----|-------|--------|-------|
+| PM-P01 | trailing-stop peak wiped each cycle when `position_id` is `None` | In the Smart Money monitor exit loop, peak ROI is inserted under `pos_id = position_id.unwrap_or(condition_id)`, but the post-loop `peak_roi.retain(...)` keeps only keys present in `open_pos_ids`, which is built from `position_id` only (`filter_map(\|r\| r.position_id.clone())`). For any open position whose `position_id` is `None`, its freshly-inserted peak (keyed by `condition_id`) is removed every cycle, so trailing-stop tracking never accumulates and the trailing stop effectively never fires for it. Matches contract Unknowns U2 / fact F53 from the validation-harness sprint. Fix candidates: build `open_pos_ids` from the same `pos_id` fallback, or persist peaks keyed consistently. NOTE: this is a behaviour change — keep it OUT of any frozen-behaviour test sprint; verify against a live sample. See `docs/paper-validation-harness-report.md` § Independent review. |  2026-06-13 (validation-harness sprint, Codex-confirmed) |
+
 ## ALL RESOLVED
 
 ### Crashes & Security (P0)
