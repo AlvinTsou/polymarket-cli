@@ -486,3 +486,56 @@ fn wallet_address_succeeds_or_fails_gracefully() {
     // Either succeeds or fails with an error message — not a panic
     assert!(output.status.success() || !output.stderr.is_empty());
 }
+
+// ───────────────── Smart Money paper-trade CLI smoke tests ─────────────────
+// These run the real binary against an ISOLATED, empty $HOME so they never read
+// the operator's real ~/.config/polymarket and make no network call. They pin
+// the read-only / no-op behaviour of the paper-trade status commands.
+
+/// A `polymarket` command whose `$HOME` points at a fresh empty temp dir, so
+/// `dirs::home_dir()` (and thus `~/.config/polymarket/smart/`) resolves into
+/// isolated, empty storage. Returns the command and the TempDir guard (keep it
+/// alive for the duration of the assertion).
+fn polymarket_isolated() -> (Command, tempfile::TempDir) {
+    let home = tempfile::tempdir().expect("create temp HOME");
+    let mut cmd = Command::cargo_bin("polymarket").unwrap();
+    cmd.env_remove("POLYMARKET_PRIVATE_KEY");
+    cmd.env_remove("POLYMARKET_SIGNATURE_TYPE");
+    cmd.env("HOME", home.path());
+    (cmd, home)
+}
+
+#[test]
+fn smart_reconcile_dry_run_is_noop_with_no_open_positions() {
+    // AC5: reconcile --dry-run with no open paper positions is a zero-change
+    // no-op (loop body never runs, no settlement fetch / network call).
+    let (mut cmd, _home) = polymarket_isolated();
+    cmd.args(["smart", "reconcile", "--dry-run"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "No settled open paper positions found.",
+        ));
+}
+
+#[test]
+fn smart_roi_reads_isolated_home_not_real_config() {
+    // AC6: smart roi against an empty isolated HOME reports the empty state,
+    // proving it read the isolated (empty) store rather than the real config.
+    let (mut cmd, _home) = polymarket_isolated();
+    cmd.args(["smart", "roi"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No follow trades yet."));
+}
+
+#[test]
+fn smart_crypto_status_reads_isolated_home() {
+    // AC6 (companion): crypto status against an empty isolated HOME reports the
+    // empty state with no panic and exit 0.
+    let (mut cmd, _home) = polymarket_isolated();
+    cmd.args(["smart", "crypto", "status"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No crypto paper trades yet."));
+}
