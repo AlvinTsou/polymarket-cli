@@ -33,6 +33,31 @@ const SIGNAL_THRESHOLD: f64 = 0.10;
 /// High confidence threshold.
 const HIGH_CONFIDENCE: f64 = 0.30;
 
+/// Pure direction + confidence classification from the final volatility and raw
+/// score, mirroring the live signal gate in [`compute_signal_full`]:
+///   1. volatility strictly above [`VOL_THRESHOLD`] -> `Skip`
+///   2. otherwise |raw_score| below [`SIGNAL_THRESHOLD`] -> `Skip`
+///   3. otherwise the sign of `raw_score` picks `Up`/`Down`, with confidence
+///      scaled by [`HIGH_CONFIDENCE`] and clamped to 1.0.
+///
+/// Extracted so the threshold gate is unit-testable without constructing full
+/// candle/orderbook/trade inputs. Behaviour is identical to the previous inline
+/// expression.
+pub fn classify_direction(volatility: f64, raw_score: f64) -> (Direction, f64) {
+    // Skip on excess volatility OR a too-weak score (both gate to no trade).
+    if volatility > VOL_THRESHOLD || raw_score.abs() < SIGNAL_THRESHOLD {
+        (Direction::Skip, 0.0)
+    } else {
+        let dir = if raw_score > 0.0 {
+            Direction::Up
+        } else {
+            Direction::Down
+        };
+        let conf = (raw_score.abs() / HIGH_CONFIDENCE).min(1.0);
+        (dir, conf)
+    }
+}
+
 /// Compute momentum signal from exchange data (basic, no futures).
 ///
 /// `candles`: recent 1m candles (at least 6 needed for 5m lookback).
@@ -105,19 +130,7 @@ pub fn compute_signal_full(
         }
     };
 
-    let (direction, confidence) = if volatility > VOL_THRESHOLD {
-        (Direction::Skip, 0.0)
-    } else if raw_score.abs() < SIGNAL_THRESHOLD {
-        (Direction::Skip, 0.0)
-    } else {
-        let dir = if raw_score > 0.0 {
-            Direction::Up
-        } else {
-            Direction::Down
-        };
-        let conf = (raw_score.abs() / HIGH_CONFIDENCE).min(1.0);
-        (dir, conf)
-    };
+    let (direction, confidence) = classify_direction(volatility, raw_score);
 
     MomentumSignal {
         asset,
@@ -343,19 +356,7 @@ fn compute_signal_from_candles(asset: CryptoAsset, candles: &[Candle]) -> Moment
         + W_OB * ob_imbalance
         + W_FLOW * trade_flow;
 
-    let (direction, confidence) = if volatility > VOL_THRESHOLD {
-        (Direction::Skip, 0.0)
-    } else if raw_score.abs() < SIGNAL_THRESHOLD {
-        (Direction::Skip, 0.0)
-    } else {
-        let dir = if raw_score > 0.0 {
-            Direction::Up
-        } else {
-            Direction::Down
-        };
-        let conf = (raw_score.abs() / HIGH_CONFIDENCE).min(1.0);
-        (dir, conf)
-    };
+    let (direction, confidence) = classify_direction(volatility, raw_score);
 
     MomentumSignal {
         asset,
@@ -482,4 +483,69 @@ pub struct BacktestEntry {
     pub window_open: f64,
     pub window_close: f64,
     pub correct: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    //! Characterization tests for the crypto signal direction gate.
+    //!
+    //! These pin the EXISTING behaviour of [`classify_direction`] (the pure
+    //! core of `compute_signal_full`) so a future change to the volatility /
+    //! score thresholds is caught before it reaches a live monitor sample.
+    use super::*;
+
+    // VOL_THRESHOLD = 0.003, SIGNAL_THRESHOLD = 0.10, HIGH_CONFIDENCE = 0.30.
+
+    #[test]
+    fn high_volatility_skips() {
+        // Strictly above VOL_THRESHOLD -> Skip regardless of a strong score.
+        let (dir, conf) = classify_direction(0.0031, 0.50);
+        assert_eq!(dir, Direction::Skip);
+        assert_eq!(conf, 0.0);
+    }
+
+    #[test]
+    fn volatility_at_threshold_does_not_skip() {
+        // Boundary: the gate is `>`, so exactly VOL_THRESHOLD is NOT skipped.
+        let (dir, _) = classify_direction(0.003, 0.50);
+        assert_eq!(dir, Direction::Up);
+    }
+
+    #[test]
+    fn weak_score_skips() {
+        // |score| below SIGNAL_THRESHOLD -> Skip.
+        let (dir, conf) = classify_direction(0.0, 0.05);
+        assert_eq!(dir, Direction::Skip);
+        assert_eq!(conf, 0.0);
+        let (dir_neg, _) = classify_direction(0.0, -0.05);
+        assert_eq!(dir_neg, Direction::Skip);
+    }
+
+    #[test]
+    fn score_at_threshold_does_not_skip() {
+        // Boundary: the gate is `<`, so exactly SIGNAL_THRESHOLD is NOT skipped.
+        let (dir, _) = classify_direction(0.0, 0.10);
+        assert_eq!(dir, Direction::Up);
+    }
+
+    #[test]
+    fn clear_bullish_emits_up() {
+        let (dir, _) = classify_direction(0.0, 0.42);
+        assert_eq!(dir, Direction::Up);
+    }
+
+    #[test]
+    fn clear_bearish_emits_down() {
+        let (dir, _) = classify_direction(0.0, -0.42);
+        assert_eq!(dir, Direction::Down);
+    }
+
+    #[test]
+    fn confidence_scales_and_clamps() {
+        // conf = (|score| / HIGH_CONFIDENCE).min(1.0)
+        let (_, half) = classify_direction(0.0, 0.15);
+        assert!((half - 0.5).abs() < 1e-9, "expected 0.5, got {half}");
+        let (_, capped) = classify_direction(0.0, 0.90);
+        assert_eq!(capped, 1.0, "confidence must clamp to 1.0");
+    }
 }

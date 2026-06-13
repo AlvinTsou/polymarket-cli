@@ -1,0 +1,14 @@
+{"name":"take-profit fires at +20% (boundary, >=)","roi":20.0,"age_days":0,"prev_peak":0.0,"expected":"take_profit"}
+{"name":"just below take-profit holds","roi":19.9,"age_days":0,"prev_peak":0.0,"expected":"hold"}
+{"name":"stop-loss fires at -20% (boundary, <=)","roi":-20.0,"age_days":0,"prev_peak":0.0,"expected":"stop_loss"}
+{"name":"just above stop-loss holds","roi":-19.9,"age_days":0,"prev_peak":0.0,"expected":"hold"}
+{"name":"time-stop fires at 7d with ROI < 5%","roi":2.0,"age_days":7,"prev_peak":0.0,"expected":"time_stop"}
+{"name":"time-stop not yet (6 days)","roi":2.0,"age_days":6,"prev_peak":0.0,"expected":"hold"}
+{"name":"time-stop ROI at +5% does not fire (strict <)","roi":5.0,"age_days":10,"prev_peak":0.0,"expected":"hold"}
+{"name":"trailing fires: peak 20% drawdown to 10% (<14% threshold)","roi":10.0,"age_days":0,"prev_peak":20.0,"expected":"trailing_stop"}
+{"name":"trailing armed but no drawdown (18% >= 14% threshold)","roi":18.0,"age_days":0,"prev_peak":20.0,"expected":"hold"}
+{"name":"trailing not armed (peak 12% < 15% activate)","roi":10.0,"age_days":0,"prev_peak":12.0,"expected":"hold"}
+{"name":"take-profit precedence over trailing","roi":25.0,"age_days":0,"prev_peak":100.0,"expected":"take_profit"}
+{"name":"stop-loss precedence over time-stop","roi":-25.0,"age_days":10,"prev_peak":0.0,"expected":"stop_loss"}
+{"name":"trailing boundary: roi exactly at threshold holds (strict <)","roi":14.0,"age_days":0,"prev_peak":20.0,"expected":"hold"}
+{"name":"fresh peak does not self-trigger trailing (roi==peak)","roi":16.0,"age_days":0,"prev_peak":16.0,"expected":"hold"}

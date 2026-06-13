@@ -1882,6 +1882,124 @@ fn filter_records(
 }
 
 /// Calculate PnL accounting for BUY vs SELL direction.
+// ───────────────────────── Paper-trade exit rules ─────────────────────────
+// Self-managed exit thresholds for the Smart Money monitor. These are the
+// single source of truth shared by the live exit loop and `evaluate_exit`; a
+// change here is caught by the unit tests in the `tests` module below.
+/// Close at or above +20% ROI.
+pub const TAKE_PROFIT_PCT: f64 = 20.0;
+/// Close at or below -20% ROI.
+pub const STOP_LOSS_PCT: f64 = -20.0;
+/// Arm the trailing stop once peak ROI reaches +15%.
+pub const TRAILING_ACTIVATE_PCT: f64 = 15.0;
+/// Once armed, close if ROI falls 30% below the peak.
+pub const TRAILING_DRAWDOWN_PCT: f64 = 30.0;
+/// Close stale positions older than 7 days...
+pub const TIME_STOP_DAYS: i64 = 7;
+/// ...whose ROI is still below +5%.
+pub const TIME_STOP_MIN_ROI: f64 = 5.0;
+
+/// Outcome of evaluating a single open position against the self-managed exit
+/// rules. Mirrors the live monitor loop's decision branches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExitDecision {
+    TakeProfit,
+    StopLoss,
+    TimeStop,
+    TrailingStop,
+    Hold,
+}
+
+/// Pure evaluation of the self-managed exit rules for one position.
+///
+/// Inputs: `roi` (percent), `age_days` (whole days since entry), and
+/// `prev_peak` (highest ROI seen so far for this position). Returns the exit
+/// decision plus the updated peak ROI (`max(prev_peak, roi)` on the
+/// trailing/hold path; unchanged when an earlier rule fires).
+///
+/// Evaluation order is take-profit → stop-loss → time-stop → trailing-stop,
+/// matching the live monitor loop (take-profit/stop-loss/time-stop short-circuit
+/// before the trailing check). Extracted so the rules are unit-testable without
+/// the surrounding async monitor loop; the live loop keeps its own side effects
+/// but reads the same threshold constants above.
+pub fn evaluate_exit(roi: f64, age_days: i64, prev_peak: f64) -> (ExitDecision, f64) {
+    if roi >= TAKE_PROFIT_PCT {
+        return (ExitDecision::TakeProfit, prev_peak);
+    }
+    if roi <= STOP_LOSS_PCT {
+        return (ExitDecision::StopLoss, prev_peak);
+    }
+    if age_days >= TIME_STOP_DAYS && roi < TIME_STOP_MIN_ROI {
+        return (ExitDecision::TimeStop, prev_peak);
+    }
+    let current_peak = if roi > prev_peak { roi } else { prev_peak };
+    if current_peak >= TRAILING_ACTIVATE_PCT {
+        let threshold = current_peak * (1.0 - TRAILING_DRAWDOWN_PCT / 100.0);
+        if roi < threshold {
+            return (ExitDecision::TrailingStop, current_peak);
+        }
+    }
+    (ExitDecision::Hold, current_peak)
+}
+
+/// Aggregate classification of crypto paper-trade records.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CryptoStats {
+    pub total: usize,
+    pub open: usize,
+    pub closed: usize,
+    pub expired: usize,
+    pub wins: usize,
+    pub losses: usize,
+    pub total_pnl: f64,
+}
+
+/// Classify crypto paper-trade records (those whose `entry_reason` starts with
+/// `"crypto:"`) into open/closed/expired counts and win/loss tallies.
+///
+/// `wins`, `losses` and `total_pnl` are derived ONLY from records with status
+/// `Closed`; `Expired` records are counted separately and never inflate the
+/// win/loss stats. Mirrors the classification in `cmd_crypto_status`.
+pub fn classify_crypto_stats(records: &[FollowRecord]) -> CryptoStats {
+    let crypto: Vec<&FollowRecord> = records
+        .iter()
+        .filter(|r| {
+            r.entry_reason
+                .as_deref()
+                .map(|e| e.starts_with("crypto:"))
+                .unwrap_or(false)
+        })
+        .collect();
+    let open = crypto.iter().filter(|r| r.is_open()).count();
+    let expired = crypto
+        .iter()
+        .filter(|r| matches!(r.status.as_ref(), Some(crate::smart::TradeStatus::Expired)))
+        .count();
+    let closed_recs: Vec<&&FollowRecord> = crypto
+        .iter()
+        .filter(|r| matches!(r.status.as_ref(), Some(crate::smart::TradeStatus::Closed)))
+        .collect();
+    let wins = closed_recs
+        .iter()
+        .filter(|r| r.realized_pnl.unwrap_or(0.0) > 0.0)
+        .count();
+    let closed = closed_recs.len();
+    let losses = closed - wins;
+    let total_pnl: f64 = closed_recs
+        .iter()
+        .map(|r| r.realized_pnl.unwrap_or(0.0))
+        .sum();
+    CryptoStats {
+        total: crypto.len(),
+        open,
+        closed,
+        expired,
+        wins,
+        losses,
+        total_pnl,
+    }
+}
+
 fn calc_open_pnl(side: &str, amount_usdc: f64, entry_price: f64, current_price: f64) -> f64 {
     if entry_price <= 0.0 {
         return 0.0;
@@ -4906,12 +5024,12 @@ async fn cmd_monitor(
                     }
 
                     // Self-managed exits: take-profit, stop-loss, trailing-stop, time-stop
-                    let take_profit_pct = 20.0f64;   // close at +20% ROI
-                    let stop_loss_pct = -20.0f64;
-                    let trailing_activate_pct = 15.0f64;  // activate trailing stop after +15% ROI
-                    let trailing_drawdown_pct = 30.0f64;  // close if ROI drops 30% from peak
-                    let time_stop_days = 7i64;            // close if open > 7 days
-                    let time_stop_min_roi = 5.0f64;       // ... and ROI < +5%
+                    // Thresholds for the operator-facing log strings; the exit
+                    // decision itself reads the same constants via evaluate_exit.
+                    let take_profit_pct = TAKE_PROFIT_PCT;
+                    let stop_loss_pct = STOP_LOSS_PCT;
+                    let trailing_drawdown_pct = TRAILING_DRAWDOWN_PCT;
+                    let time_stop_min_roi = TIME_STOP_MIN_ROI;
                     let mut peak_roi = store::load_peak_roi().unwrap_or_default();
                     let mut peak_changed = false;
                     let mut closed_any = 0u32;
@@ -4959,57 +5077,55 @@ async fn cmd_monitor(
                         let pnl = calc_open_pnl(&r.side, r.amount_usdc, entry, current);
                         let roi = if r.amount_usdc > 0.0 { pnl / r.amount_usdc * 100.0 } else { 0.0 };
 
-                        // Take-profit
-                        if roi >= take_profit_pct {
-                            let reason = format!("take-profit: {:.1}% (target {:.0}%)", roi, take_profit_pct);
-                            if let Err(e) = store::close_follow_position(&r.condition_id, &r.outcome, current, &reason) {
-                                eprintln!("warn: failed to close take-profit position: {e}");
-                            }
-                            peak_roi.remove(pos_id);
-                            peak_changed = true;
-                            closed_any += 1;
-                            eprintln!("\n  TAKE-PROFIT: {} @ {:.3} -> {:.3} ({:+.1}%)", r.market_title, entry, current, roi);
-                            continue;
-                        }
-
-                        // Stop-loss
-                        if roi <= stop_loss_pct {
-                            let reason = format!("stop-loss: {:.1}% (limit {:.0}%)", roi, stop_loss_pct);
-                            if let Err(e) = store::close_follow_position(&r.condition_id, &r.outcome, current, &reason) {
-                                eprintln!("warn: failed to close stop-loss position: {e}");
-                            }
-                            peak_roi.remove(pos_id);
-                            peak_changed = true;
-                            closed_any += 1;
-                            eprintln!("\n  STOP-LOSS: {} @ {:.3} -> {:.3} ({:+.1}%)", r.market_title, entry, current, roi);
-                            continue;
-                        }
-
-                        // Time-stop: close stale positions (> 7 days, ROI < +5%)
+                        // Self-managed exit decision via the shared pure rule
+                        // (single source of truth with the unit tests). Side
+                        // effects (close + operator logs + peak bookkeeping)
+                        // stay here; the rule selection lives in evaluate_exit.
                         let age_days = (Utc::now() - r.timestamp).num_days();
-                        if age_days >= time_stop_days && roi < time_stop_min_roi {
-                            let reason = format!("time-stop: {}d old, ROI {:.1}% < {:.0}%", age_days, roi, time_stop_min_roi);
-                            if let Err(e) = store::close_follow_position(&r.condition_id, &r.outcome, current, &reason) {
-                                eprintln!("warn: failed to close time-stop position: {e}");
-                            }
-                            peak_roi.remove(pos_id);
-                            peak_changed = true;
-                            closed_any += 1;
-                            eprintln!("\n  TIME-STOP: {} ({}d, ROI {:.1}%) @ {:.3}", r.market_title, age_days, roi, current);
-                            continue;
-                        }
-
-                        // Trailing stop: update peak and check drawdown
                         let prev_peak = peak_roi.get(pos_id).copied().unwrap_or(0.0f64);
-                        if roi > prev_peak {
-                            peak_roi.insert(pos_id.to_string(), roi);
+                        let (decision, new_peak) = evaluate_exit(roi, age_days, prev_peak);
+                        // Persist peak growth on the hold/trailing path (mirrors
+                        // the previous inline behaviour: peak rises before the
+                        // trailing-stop check; take-profit/stop-loss/time-stop
+                        // leave the peak untouched and then remove it on close).
+                        if new_peak > prev_peak {
+                            peak_roi.insert(pos_id.to_string(), new_peak);
                             peak_changed = true;
                         }
-                        let current_peak = peak_roi.get(pos_id).copied().unwrap_or(0.0);
-
-                        if current_peak >= trailing_activate_pct {
-                            let threshold = current_peak * (1.0 - trailing_drawdown_pct / 100.0);
-                            if roi < threshold {
+                        match decision {
+                            ExitDecision::TakeProfit => {
+                                let reason = format!("take-profit: {:.1}% (target {:.0}%)", roi, take_profit_pct);
+                                if let Err(e) = store::close_follow_position(&r.condition_id, &r.outcome, current, &reason) {
+                                    eprintln!("warn: failed to close take-profit position: {e}");
+                                }
+                                peak_roi.remove(pos_id);
+                                peak_changed = true;
+                                closed_any += 1;
+                                eprintln!("\n  TAKE-PROFIT: {} @ {:.3} -> {:.3} ({:+.1}%)", r.market_title, entry, current, roi);
+                            }
+                            ExitDecision::StopLoss => {
+                                let reason = format!("stop-loss: {:.1}% (limit {:.0}%)", roi, stop_loss_pct);
+                                if let Err(e) = store::close_follow_position(&r.condition_id, &r.outcome, current, &reason) {
+                                    eprintln!("warn: failed to close stop-loss position: {e}");
+                                }
+                                peak_roi.remove(pos_id);
+                                peak_changed = true;
+                                closed_any += 1;
+                                eprintln!("\n  STOP-LOSS: {} @ {:.3} -> {:.3} ({:+.1}%)", r.market_title, entry, current, roi);
+                            }
+                            ExitDecision::TimeStop => {
+                                let reason = format!("time-stop: {}d old, ROI {:.1}% < {:.0}%", age_days, roi, time_stop_min_roi);
+                                if let Err(e) = store::close_follow_position(&r.condition_id, &r.outcome, current, &reason) {
+                                    eprintln!("warn: failed to close time-stop position: {e}");
+                                }
+                                peak_roi.remove(pos_id);
+                                peak_changed = true;
+                                closed_any += 1;
+                                eprintln!("\n  TIME-STOP: {} ({}d, ROI {:.1}%) @ {:.3}", r.market_title, age_days, roi, current);
+                            }
+                            ExitDecision::TrailingStop => {
+                                let current_peak = new_peak;
+                                let threshold = current_peak * (1.0 - trailing_drawdown_pct / 100.0);
                                 let reason = format!("trailing-stop: peak {:.1}% -> {:.1}% (drawdown {:.0}%)", current_peak, roi, trailing_drawdown_pct);
                                 if let Err(e) = store::close_follow_position(&r.condition_id, &r.outcome, current, &reason) {
                                     eprintln!("warn: failed to close trailing-stop position: {e}");
@@ -5019,6 +5135,7 @@ async fn cmd_monitor(
                                 closed_any += 1;
                                 eprintln!("\n  TRAILING-STOP: {} peak {:.1}% -> now {:.1}% (threshold {:.1}%) @ {:.3}", r.market_title, current_peak, roi, threshold, current);
                             }
+                            ExitDecision::Hold => {}
                         }
                     }
 
@@ -6917,21 +7034,18 @@ fn cmd_crypto_status(output: &OutputFormat) -> Result<()> {
         return Ok(());
     }
 
+    // Counts + win/loss tallies via the shared pure classifier (single source
+    // of truth with the unit tests); Expired records are excluded from wins/losses.
+    let stats = classify_crypto_stats(&records);
     let open: Vec<_> = crypto_trades.iter().filter(|r| r.is_open()).collect();
-    let expired: Vec<_> = crypto_trades
-        .iter()
-        .filter(|r| matches!(r.status.as_ref(), Some(crate::smart::TradeStatus::Expired)))
-        .collect();
     let closed: Vec<_> = crypto_trades
         .iter()
         .filter(|r| matches!(r.status.as_ref(), Some(crate::smart::TradeStatus::Closed)))
         .collect();
-    let wins = closed
-        .iter()
-        .filter(|r| r.realized_pnl.unwrap_or(0.0) > 0.0)
-        .count();
-    let losses = closed.len() - wins;
-    let total_pnl: f64 = closed.iter().map(|r| r.realized_pnl.unwrap_or(0.0)).sum();
+    let wins = stats.wins;
+    let losses = stats.losses;
+    let total_pnl: f64 = stats.total_pnl;
+    let expired_count = stats.expired;
     let total_spent: f64 = crypto_trades
         .iter()
         .filter(|r| !matches!(r.status.as_ref(), Some(crate::smart::TradeStatus::Expired)))
@@ -6951,7 +7065,7 @@ fn cmd_crypto_status(output: &OutputFormat) -> Result<()> {
                     "total_trades": crypto_trades.len(),
                     "open": open.len(),
                     "closed": closed.len(),
-                    "expired": expired.len(),
+                    "expired": expired_count,
                     "wins": wins,
                     "losses": losses,
                     "win_rate": format!("{:.1}%", win_rate),
@@ -6967,7 +7081,7 @@ fn cmd_crypto_status(output: &OutputFormat) -> Result<()> {
                 crypto_trades.len(),
                 open.len(),
                 closed.len(),
-                expired.len()
+                expired_count
             );
             println!("W/L: {}/{} ({:.1}%)", wins, losses, win_rate);
             println!(
@@ -7014,4 +7128,121 @@ fn cmd_crypto_status(output: &OutputFormat) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    //! Characterization tests for the Smart Money paper-trade exit rules and
+    //! crypto status classification. These pin the EXISTING behaviour so a
+    //! future threshold/logic change is caught offline before a live sample.
+    use super::*;
+    use crate::smart::FollowRecord;
+
+    const EXIT_FIXTURE: &str = include_str!("../../tests/fixtures/pmcc-paper/exit-rules.jsonl");
+    const STATUS_FIXTURE: &str =
+        include_str!("../../tests/fixtures/pmcc-paper/crypto-status.jsonl");
+
+    #[derive(serde::Deserialize)]
+    struct ExitCase {
+        name: String,
+        roi: f64,
+        age_days: i64,
+        prev_peak: f64,
+        expected: String,
+    }
+
+    fn parse_expected(s: &str) -> ExitDecision {
+        match s {
+            "take_profit" => ExitDecision::TakeProfit,
+            "stop_loss" => ExitDecision::StopLoss,
+            "time_stop" => ExitDecision::TimeStop,
+            "trailing_stop" => ExitDecision::TrailingStop,
+            "hold" => ExitDecision::Hold,
+            other => panic!("unknown expected decision in fixture: {other}"),
+        }
+    }
+
+    #[test]
+    fn exit_rules_match_fixture_expectations() {
+        let mut count = 0;
+        for line in EXIT_FIXTURE.lines().filter(|l| !l.trim().is_empty()) {
+            let case: ExitCase = serde_json::from_str(line)
+                .unwrap_or_else(|e| panic!("bad exit fixture line `{line}`: {e}"));
+            let (decision, _peak) = evaluate_exit(case.roi, case.age_days, case.prev_peak);
+            assert_eq!(
+                decision,
+                parse_expected(&case.expected),
+                "exit rule mismatch for case: {}",
+                case.name
+            );
+            count += 1;
+        }
+        assert!(
+            count >= 10,
+            "expected >=10 exit-rule scenarios, got {count}"
+        );
+    }
+
+    #[test]
+    fn exit_rule_thresholds_are_frozen() {
+        // Direct pin of the constants the live monitor loop relies on.
+        assert_eq!(TAKE_PROFIT_PCT, 20.0);
+        assert_eq!(STOP_LOSS_PCT, -20.0);
+        assert_eq!(TRAILING_ACTIVATE_PCT, 15.0);
+        assert_eq!(TRAILING_DRAWDOWN_PCT, 30.0);
+        assert_eq!(TIME_STOP_DAYS, 7);
+        assert_eq!(TIME_STOP_MIN_ROI, 5.0);
+    }
+
+    #[test]
+    fn evaluate_exit_tracks_peak_on_hold() {
+        // On the hold path the returned peak rises to max(prev_peak, roi).
+        let (decision, peak) = evaluate_exit(8.0, 0, 5.0);
+        assert_eq!(decision, ExitDecision::Hold);
+        assert_eq!(peak, 8.0);
+        // An earlier-firing rule leaves the peak untouched.
+        let (decision, peak) = evaluate_exit(25.0, 0, 5.0);
+        assert_eq!(decision, ExitDecision::TakeProfit);
+        assert_eq!(peak, 5.0);
+    }
+
+    fn load_status_fixture() -> Vec<FollowRecord> {
+        STATUS_FIXTURE
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| {
+                serde_json::from_str::<FollowRecord>(l)
+                    .unwrap_or_else(|e| panic!("bad status fixture line `{l}`: {e}"))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn crypto_stats_exclude_non_crypto_records() {
+        let records = load_status_fixture();
+        let stats = classify_crypto_stats(&records);
+        // 5 fixture rows: 4 crypto-tagged + 1 smart-tagged (excluded entirely).
+        assert_eq!(stats.total, 4, "only crypto: records should be counted");
+    }
+
+    #[test]
+    fn expired_records_do_not_inflate_closed_win_loss() {
+        let records = load_status_fixture();
+        let stats = classify_crypto_stats(&records);
+        // Crypto rows: 1 Closed win (+5), 1 Closed loss (-3), 1 Expired (+99), 1 Open.
+        assert_eq!(stats.open, 1);
+        assert_eq!(stats.closed, 2);
+        assert_eq!(stats.expired, 1);
+        assert_eq!(
+            stats.wins, 1,
+            "the +99 Expired record must NOT count as a win"
+        );
+        assert_eq!(stats.losses, 1);
+        // total_pnl is over Closed only: 5 + (-3) = 2; the +99 Expired is excluded.
+        assert!(
+            (stats.total_pnl - 2.0).abs() < 1e-9,
+            "got {}",
+            stats.total_pnl
+        );
+    }
 }
