@@ -1,4 +1,37 @@
-# PMCC Stop-Loss Fix — Session Resume
+# PMCC — Session Resume
+
+> Live state on top; the 2026-05-24 stop-loss-fix session is kept below as history.
+
+## Live state (2026-06-13) — paper-trade validation harness SHIPPED on `main`
+
+Deterministic offline test harness merged + pushed (`ac30569` merge, `4590968`
+ticket). 3 pure helpers now used by live paths (`evaluate_exit`,
+`classify_direction`, `classify_crypto_stats`); 184 tests green; fixtures in
+`tests/fixtures/pmcc-paper/`; full report `docs/paper-validation-harness-report.md`.
+Codex-confirmed the exit-loop refactor is behaviour-equivalent. (Built via Path B
+after an AgentFlow `source-align` sprint aborted.)
+
+**VERIFIED hardcoded exit constants** (now `const`s in `smart.rs`, test-pinned):
+TP `+20%` / SL `-20%` / trailing-activate `+15%` / drawdown `30%` / time-stop
+`7d & ROI<+5%`.
+
+### Open TODOs (NOT yet done — both need a live sample, deferred from this session)
+
+1. **Reconcile the `-45%` discrepancy.** `CLAUDE.md` § Money Safety AND this
+   resume's history section below both say stop-loss `-45%` / drawdown `50%`, but
+   the live hardcoded self-managed exit loop uses `-20%` / `30%` (verified + pinned
+   by tests). Likely two layers (monitor.json risk params vs the hardcoded exit
+   loop). Decide which is intended, then fix the docs OR the code to match — do NOT
+   change the exit-loop behaviour blindly.
+2. **Fix PM-P01** (`tasks/issues.md`): trailing-stop peak is wiped each monitor
+   cycle when `position_id` is `None` (peak keyed by `condition_id`, but post-loop
+   `peak_roi.retain` keys by `position_id`), so trailing never accumulates for
+   those positions. This is a BEHAVIOUR change → out of scope for the frozen test
+   sprint; verify the fix against a live sample.
+
+---
+
+# PMCC Stop-Loss Fix — Session Resume (history, 2026-05-24)
 
 **Date**: 2026-05-24 ~ 2026-05-25
 **Branch**: `main`
