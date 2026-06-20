@@ -33,6 +33,10 @@
 2. **WC fixture follow-on slices** (deferred; side-effectful, hand-write or separate
    slice): schedule ingestion → Polymarket market mapping → monitor-cycle wiring that
    consumes `match_phase` (entry gate / force-exit). Do AFTER phase contract stable.
+   **Must-fix BEFORE live wiring** (Codex /cso): add `PhaseConfig::new(...) -> Result`
+   enforcing windows `>= 0`, `settlement_watch <= exit_window` (else SettlementWatch
+   swallows the force-exit window), and treat `settlement <= kickoff` as invalid;
+   then drop the module-wide `#![allow(dead_code)]`.
 3. **PM-P01 live-sample verify**: confirm trailing stop now fires for a real
    `position_id=None` open position. BLOCKED: follows.jsonl currently 0 Open,
    `peak_roi.json={}` — no live sample exists yet.

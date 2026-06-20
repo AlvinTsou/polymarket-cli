@@ -83,15 +83,25 @@ impl MatchPhase {
 ///
 /// `kickoff` and `settlement` are the fixture's two clock anchors (settlement is the
 /// *expected* market resolution time, which the schedule provides — for a knockout it
-/// includes extra time / penalties). The boundaries are checked latest-first so that
-/// a degenerate config (e.g. `settlement` very close to `kickoff`, making the exit
-/// window open before kickoff) still degrades safely toward the more advanced,
-/// risk-reducing phase rather than reporting `LockedInPlay` past the exit point.
+/// includes extra time / penalties).
+///
+/// Boundaries are checked latest-first, so within a normal timeline an overlap
+/// between `kickoff` and `exit_open` resolves in favour of the more advanced phase
+/// (exit/watch/settled win over `LockedInPlay`). This is NOT a general "always
+/// risk-reducing" guarantee — see the config invariants below; e.g. with
+/// `settlement_watch >= exit_window` the `SettlementWatch` window swallows
+/// `ExitWindow` and `requires_exit()` never fires.
+///
+/// Expected config invariants (held by [`PhaseConfig::default`]; NOT validated on the
+/// public fields — a validated constructor is deferred to the wiring slice):
+/// `kickoff <= settlement`, all windows `>= 0`, and `settlement_watch <= exit_window`
+/// (so the force-exit window is never empty). Out-of-invariant input is classified
+/// deterministically but the phase semantics may not match intent.
 pub fn match_phase(
     now: DateTime<Utc>,
     kickoff: DateTime<Utc>,
     settlement: DateTime<Utc>,
-    cfg: &PhaseConfig,
+    cfg: PhaseConfig,
 ) -> MatchPhase {
     let entry_open = kickoff - cfg.entry_window;
     let exit_open = settlement - cfg.exit_window;
@@ -130,7 +140,7 @@ mod tests {
     }
 
     fn phase(now: DateTime<Utc>) -> MatchPhase {
-        match_phase(now, kickoff(), settlement(), &PhaseConfig::default())
+        match_phase(now, kickoff(), settlement(), PhaseConfig::default())
     }
 
     #[test]
@@ -189,6 +199,31 @@ mod tests {
     }
 
     #[test]
+    fn default_config_has_a_nonempty_force_exit_window() {
+        // Core motivation guard: with default config (settlement_watch 5m <
+        // exit_window 15m) the pre-settlement period MUST contain an ExitWindow that
+        // fires requires_exit(), i.e. SettlementWatch must NOT swallow the whole
+        // force-exit window. (With settlement_watch >= exit_window it would — that is
+        // the invariant a validated constructor will enforce before live wiring.)
+        let cfg = PhaseConfig::default();
+        assert!(cfg.settlement_watch <= cfg.exit_window);
+        let p = match_phase(at(19, 35), kickoff(), settlement(), cfg);
+        assert_eq!(p, MatchPhase::ExitWindow);
+        assert!(p.requires_exit());
+    }
+
+    #[test]
+    fn settlement_at_or_before_kickoff_classifies_settled() {
+        // Documented degradation for invalid/degenerate anchors: once now >= settlement
+        // the market is Settled regardless of kickoff (the resolution sweep owns it).
+        let ko = kickoff();
+        assert_eq!(
+            match_phase(ko, ko, ko, PhaseConfig::default()),
+            MatchPhase::Settled
+        );
+    }
+
+    #[test]
     fn degenerate_short_gap_prefers_risk_reducing_phase() {
         // Settlement only 10m after kickoff: the 15m exit window opens BEFORE
         // kickoff. Latest-first checks must still never report LockedInPlay past
@@ -199,12 +234,12 @@ mod tests {
         // 1m after kickoff: settlement-5m (watch) = ko+5m, settlement-15m (exit) =
         // ko-5m. now=ko+1m is >= exit_open and < watch_open -> ExitWindow, not Locked.
         assert_eq!(
-            match_phase(ko + Duration::minutes(1), ko, st, &cfg),
+            match_phase(ko + Duration::minutes(1), ko, st, cfg),
             MatchPhase::ExitWindow
         );
         // ko+6m is within settlement-5m -> SettlementWatch.
         assert_eq!(
-            match_phase(ko + Duration::minutes(6), ko, st, &cfg),
+            match_phase(ko + Duration::minutes(6), ko, st, cfg),
             MatchPhase::SettlementWatch
         );
     }
