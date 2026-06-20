@@ -5,8 +5,10 @@
 
 ## Live state (2026-06-20)
 
-- **Branch**: `main`, **synced with `origin/main`** (nothing unpushed). Latest `d6eaffc`.
-- **Green gate**: `cargo test` = **196 passed** (144 bin + 52 integration). `cargo fmt` clean.
+- **Branch**: `main`. **1 commit ahead of `origin/main`** (`1cc069f`, NOT pushed —
+  Codex review pending per push gate). Latest pushed = `d6eaffc`.
+- **Green gate**: `cargo test` = **202 passed** (150 bin + 52 integration). `cargo fmt` clean.
+  (Note: `cargo test --lib` fails — binary crate has no lib target; use `--bin polymarket`.)
 
 ### Done this session (all PUSHED)
 - **PM-P01** (`3213d9a`). Trailing-stop `peak_roi` was wiped each monitor cycle for
@@ -25,13 +27,15 @@
   Built by hand, NOT AgentFlow (memory `feedback-when-to-use-agentflow`).
 
 ## Next steps
+0. **Push `1cc069f`** once a Codex /cso review of the diff passes (push gate).
 1. **WC fixture follow-on slices** (deferred; side-effectful, hand-write or separate
    slice): schedule ingestion → Polymarket market mapping → monitor-cycle wiring that
    consumes `match_phase` (entry gate / force-exit). Do AFTER phase contract stable.
-   **Must-fix BEFORE live wiring** (Codex /cso): add `PhaseConfig::new(...) -> Result`
-   enforcing windows `>= 0`, `settlement_watch <= exit_window` (else SettlementWatch
-   swallows the force-exit window), and treat `settlement <= kickoff` as invalid;
-   then drop the module-wide `#![allow(dead_code)]`.
+   **Must-fix prerequisite DONE** (`1cc069f`): `PhaseConfig::new` (windows `>= 0`,
+   `settlement_watch <= exit_window`) + `match_phase_checked` (rejects
+   `settlement <= kickoff`) + typed `PhaseError`. **Use `match_phase_checked` (not raw
+   `match_phase`) at the wiring boundary.** `#![allow(dead_code)]` INTENTIONALLY kept —
+   drop it when wiring consumes these (dropping now only adds unused warnings).
 2. **PM-P01 live-sample verify**: confirm trailing stop now fires for a real
    `position_id=None` open position. BLOCKED: follows.jsonl currently 0 Open,
    `peak_roi.json={}` — no live sample exists yet.
