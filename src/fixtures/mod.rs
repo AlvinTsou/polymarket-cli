@@ -211,6 +211,65 @@ pub fn match_phase_checked(
     Ok(match_phase(now, kickoff, settlement, cfg))
 }
 
+/// Why a Polymarket market cannot be classified as a fixture-backed phase. Distinct
+/// from [`PhaseError`] (which is about invariant breaches) so the caller can tell
+/// "this market simply is not a scheduled fixture" apart from "the fixture's anchors
+/// are degenerate".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FixtureError {
+    /// Market has no `game_start_time`, so it is not a scheduled fixture market and
+    /// the fixture clock does not apply (fall back to the normal trading path).
+    Unscheduled,
+    /// `game_start_time` was present but not an RFC 3339 timestamp.
+    UnparseableKickoff,
+    /// Market has no `end_date`, so there is no settlement anchor to drive exits.
+    MissingSettlement,
+    /// The anchors parsed but violate a phase invariant (see [`PhaseError`]).
+    Phase(PhaseError),
+}
+
+impl std::fmt::Display for FixtureError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FixtureError::Unscheduled => f.write_str("market has no game_start_time"),
+            FixtureError::UnparseableKickoff => {
+                f.write_str("game_start_time is not an RFC 3339 timestamp")
+            }
+            FixtureError::MissingSettlement => f.write_str("market has no end_date"),
+            FixtureError::Phase(e) => write!(f, "fixture anchors invalid: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for FixtureError {}
+
+impl From<PhaseError> for FixtureError {
+    fn from(e: PhaseError) -> Self {
+        FixtureError::Phase(e)
+    }
+}
+
+/// Bridge from a Polymarket gamma market to the fixture phase machine: derive the
+/// `kickoff` anchor from the market's `game_start_time` (RFC 3339) and the
+/// `settlement` anchor from its `end_date`, then classify via [`match_phase_checked`].
+///
+/// This is the seam the live monitor uses to decide whether a fixture market admits a
+/// new entry ([`MatchPhase::allows_new_entry`]) or must be force-exited
+/// ([`MatchPhase::requires_exit`]); it does not itself touch any positions.
+pub fn market_match_phase(
+    now: DateTime<Utc>,
+    game_start_time: Option<&str>,
+    end_date: Option<DateTime<Utc>>,
+    cfg: PhaseConfig,
+) -> Result<MatchPhase, FixtureError> {
+    let raw = game_start_time.ok_or(FixtureError::Unscheduled)?;
+    let kickoff = DateTime::parse_from_rfc3339(raw)
+        .map_err(|_| FixtureError::UnparseableKickoff)?
+        .with_timezone(&Utc);
+    let settlement = end_date.ok_or(FixtureError::MissingSettlement)?;
+    Ok(match_phase_checked(now, kickoff, settlement, cfg)?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -428,6 +487,86 @@ mod tests {
         assert_eq!(
             match_phase_checked(now, kickoff(), settlement(), cfg),
             Ok(match_phase(now, kickoff(), settlement(), cfg))
+        );
+    }
+
+    #[test]
+    fn market_match_phase_rejects_unscheduled_market() {
+        // No game_start_time => not a fixture-backed (scheduled) market.
+        assert_eq!(
+            market_match_phase(at(18, 0), None, Some(settlement()), PhaseConfig::default()),
+            Err(FixtureError::Unscheduled)
+        );
+    }
+
+    #[test]
+    fn market_match_phase_rejects_unparseable_kickoff() {
+        assert_eq!(
+            market_match_phase(
+                at(18, 0),
+                Some("not-a-timestamp"),
+                Some(settlement()),
+                PhaseConfig::default(),
+            ),
+            Err(FixtureError::UnparseableKickoff)
+        );
+    }
+
+    #[test]
+    fn market_match_phase_rejects_missing_settlement() {
+        assert_eq!(
+            market_match_phase(
+                at(18, 0),
+                Some("2026-06-20T18:00:00Z"),
+                None,
+                PhaseConfig::default(),
+            ),
+            Err(FixtureError::MissingSettlement)
+        );
+    }
+
+    #[test]
+    fn market_match_phase_parses_rfc3339_and_matches_checked() {
+        // Kickoff 18:00Z, settlement 19:50Z, now 19:35 -> ExitWindow.
+        let got = market_match_phase(
+            at(19, 35),
+            Some("2026-06-20T18:00:00Z"),
+            Some(settlement()),
+            PhaseConfig::default(),
+        );
+        assert_eq!(
+            got,
+            Ok(
+                match_phase_checked(at(19, 35), kickoff(), settlement(), PhaseConfig::default())
+                    .unwrap()
+            )
+        );
+        assert_eq!(got, Ok(MatchPhase::ExitWindow));
+    }
+
+    #[test]
+    fn market_match_phase_accepts_offset_rfc3339() {
+        // Same instant as 18:00Z expressed with a +02:00 offset must parse equal.
+        let got = market_match_phase(
+            at(19, 35),
+            Some("2026-06-20T20:00:00+02:00"),
+            Some(settlement()),
+            PhaseConfig::default(),
+        );
+        assert_eq!(got, Ok(MatchPhase::ExitWindow));
+    }
+
+    #[test]
+    fn market_match_phase_propagates_phase_errors() {
+        // settlement <= kickoff must surface as the underlying PhaseError.
+        assert_eq!(
+            market_match_phase(
+                at(18, 0),
+                Some("2026-06-20T18:00:00Z"),
+                Some(kickoff()),
+                PhaseConfig::default(),
+            ),
+            Err(FixtureError::Phase(PhaseError::SettlementNotAfterKickoff))
         );
     }
 
