@@ -5,9 +5,10 @@
 
 ## Live state (2026-06-20)
 
-- **Branch**: `main`. **1 commit ahead of `origin/main`** (`1cc069f`, NOT pushed —
-  Codex review pending per push gate). Latest pushed = `d6eaffc`.
-- **Green gate**: `cargo test` = **202 passed** (150 bin + 52 integration). `cargo fmt` clean.
+- **Branch**: `main`. **3 commits ahead of `origin/main`** (`1cc069f` feat, `14fe684`
+  docs, `570c9f1` fix — NOT pushed, Codex round-2 confirm pending per push gate).
+  Latest pushed = `d6eaffc`.
+- **Green gate**: `cargo test` = **204 passed** (152 bin + 52 integration). `cargo fmt` clean.
   (Note: `cargo test --lib` fails — binary crate has no lib target; use `--bin polymarket`.)
 
 ### Done this session (all PUSHED)
@@ -31,11 +32,13 @@
 1. **WC fixture follow-on slices** (deferred; side-effectful, hand-write or separate
    slice): schedule ingestion → Polymarket market mapping → monitor-cycle wiring that
    consumes `match_phase` (entry gate / force-exit). Do AFTER phase contract stable.
-   **Must-fix prerequisite DONE** (`1cc069f`): `PhaseConfig::new` (windows `>= 0`,
-   `settlement_watch <= exit_window`) + `match_phase_checked` (rejects
-   `settlement <= kickoff`) + typed `PhaseError`. **Use `match_phase_checked` (not raw
-   `match_phase`) at the wiring boundary.** `#![allow(dead_code)]` INTENTIONALLY kept —
-   drop it when wiring consumes these (dropping now only adds unused warnings).
+   **Must-fix prerequisite DONE** (`1cc069f` + Codex round-2 `570c9f1`):
+   `PhaseConfig::new` enforces windows `>= 0` and **STRICT** `settlement_watch <
+   exit_window` (equality collapses the ExitWindow band → `requires_exit()` never
+   fires); `match_phase_checked` rejects `settlement <= kickoff` AND `exit_window >
+   settlement - kickoff` (else `exit_open` precedes kickoff). 4 PhaseError variants.
+   **Use `match_phase_checked` (not raw `match_phase`) at the wiring boundary.**
+   `#![allow(dead_code)]` INTENTIONALLY kept — drop it when wiring consumes these.
 2. **PM-P01 live-sample verify**: confirm trailing stop now fires for a real
    `position_id=None` open position. BLOCKED: follows.jsonl currently 0 Open,
    `peak_roi.json={}` — no live sample exists yet.
