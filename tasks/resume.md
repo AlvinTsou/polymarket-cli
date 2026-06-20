@@ -5,10 +5,10 @@
 
 ## Live state (2026-06-20)
 
-- **Branch**: `main`. **3 commits ahead of `origin/main`** (`1cc069f` feat, `14fe684`
-  docs, `570c9f1` fix — NOT pushed, Codex round-2 confirm pending per push gate).
-  Latest pushed = `d6eaffc`.
-- **Green gate**: `cargo test` = **204 passed** (152 bin + 52 integration). `cargo fmt` clean.
+- **Branch**: `main`. Pushed through `000c6ac` (PhaseConfig::new + match_phase_checked
+  + Codex round-2 fixes, SHIP). **1 commit ahead unpushed**: `f81d3fe` (slice A:
+  `market_match_phase` gamma bridge) — needs Codex review before push per gate.
+- **Green gate**: `cargo test` = **210 passed** (158 bin + 52 integration). `cargo fmt` clean.
   (Note: `cargo test --lib` fails — binary crate has no lib target; use `--bin polymarket`.)
 
 ### Done this session (all PUSHED)
@@ -28,10 +28,23 @@
   Built by hand, NOT AgentFlow (memory `feedback-when-to-use-agentflow`).
 
 ## Next steps
-0. **Push `1cc069f`** once a Codex /cso review of the diff passes (push gate).
-1. **WC fixture follow-on slices** (deferred; side-effectful, hand-write or separate
-   slice): schedule ingestion → Polymarket market mapping → monitor-cycle wiring that
-   consumes `match_phase` (entry gate / force-exit). Do AFTER phase contract stable.
+0. **Push `f81d3fe`** (slice A) once a Codex /cso review passes (push gate).
+1. **WC fixture wiring — Slice B (BLOCKED on intent decision):** hook
+   `market_match_phase` into `cmd_monitor` (`src/commands/smart.rs:4577`). Gamma
+   already gives `game_start_time` + `end_date`, so NO separate schedule source is
+   needed (slice A bridges them). Two integration points:
+   - **Entry gate**: only follow/enter a fixture market when `allows_new_entry()`
+     (i.e. `EntryWindow`). Touches `cmd_follow`/`cmd_auto_follow`.
+   - **Force-exit**: when `requires_exit()` (ExitWindow), force a paper close BEFORE
+     the atomic-settlement zone. **This touches the protected self-managed exit loop /
+     `evaluate_exit` path (smart.rs ~1925/5112) — HARD BOUNDARY: needs explicit intent
+     + live-sample verification before changing exit behaviour.** Decide: does
+     force-exit run as an ADDITIONAL pre-check that short-circuits to Close (leaving
+     `evaluate_exit` untouched for non-fixture markets), or integrate into it?
+   - Open Q: how to scope "fixture markets" in the monitor — by `game_start_time`
+     present, or a tag/keyword allowlist? (slice A treats absent game_start_time as
+     `Unscheduled` → fall back to normal path, so present-field gating is the cheap
+     default.)
    **Must-fix prerequisite DONE** (`1cc069f` + Codex round-2 `570c9f1`):
    `PhaseConfig::new` enforces windows `>= 0` and **STRICT** `settlement_watch <
    exit_window` (equality collapses the ExitWindow band → `requires_exit()` never
