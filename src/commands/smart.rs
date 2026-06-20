@@ -1942,6 +1942,32 @@ pub fn evaluate_exit(roi: f64, age_days: i64, prev_peak: f64) -> (ExitDecision, 
     (ExitDecision::Hold, current_peak)
 }
 
+/// PM-P01: single source of truth for the peak-ROI map key of an open position.
+/// Every `peak_roi` get/insert/remove AND the cleanup retain set derive their key
+/// from this fn, so the write key and the retain key can never diverge.
+///
+/// The key is namespaced so two distinct positions can never collide:
+/// - rows with a `position_id` → `pid:{position_id}` (one row per id);
+/// - rows without one (legacy/imported data) → `legacy:{condition_id}:{outcome}`,
+///   which keeps YES/NO on the same market apart and, thanks to the `legacy:`
+///   prefix, can never collide with a `pid:` key even if some imported
+///   `position_id` happens to equal another row's `condition_id`. This mirrors
+///   the `(condition_id, outcome)` price key used in the exit loop.
+fn peak_key_for(r: &FollowRecord) -> String {
+    match r.position_id.as_deref() {
+        Some(pid) => format!("pid:{pid}"),
+        None => format!("legacy:{}:{}", r.condition_id, r.outcome),
+    }
+}
+
+/// PM-P01: build the peak-ROI retain key-set for the open positions, keyed
+/// identically to [`peak_key_for`]. Previously the retain set was built from
+/// `position_id` only, so peaks for `position_id == None` rows were wiped every
+/// monitor cycle and their trailing stop never accumulated.
+fn open_peak_keys_for(rows: &[&FollowRecord]) -> std::collections::HashSet<String> {
+    rows.iter().map(|r| peak_key_for(r)).collect()
+}
+
 /// Aggregate classification of crypto paper-trade records.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CryptoStats {
@@ -5041,7 +5067,7 @@ async fn cmd_monitor(
                         }
                         let entry = r.effective_entry();
                         if entry <= 0.0 { continue; }
-                        let pos_id = r.position_id.as_deref().unwrap_or(&r.condition_id);
+                        let pos_id = peak_key_for(r);
                         let price_key = (r.condition_id.clone(), r.outcome.clone());
                         let current = match live_prices.get(&price_key).copied() {
                             Some(current) if current > 0.0 => current,
@@ -5065,7 +5091,7 @@ async fn cmd_monitor(
                                     if let Err(e) = store::close_follow_position(&r.condition_id, &r.outcome, quote.exit_price, &reason) {
                                         eprintln!("warn: failed to close settled position: {e}");
                                     } else {
-                                        peak_roi.remove(pos_id);
+                                        peak_roi.remove(&pos_id);
                                         peak_changed = true;
                                         closed_any += 1;
                                         eprintln!("\n  MARKET-CLOSED: {} {} @ {:.4}", r.market_title, r.outcome, quote.exit_price);
@@ -5082,14 +5108,14 @@ async fn cmd_monitor(
                         // effects (close + operator logs + peak bookkeeping)
                         // stay here; the rule selection lives in evaluate_exit.
                         let age_days = (Utc::now() - r.timestamp).num_days();
-                        let prev_peak = peak_roi.get(pos_id).copied().unwrap_or(0.0f64);
+                        let prev_peak = peak_roi.get(&pos_id).copied().unwrap_or(0.0f64);
                         let (decision, new_peak) = evaluate_exit(roi, age_days, prev_peak);
                         // Persist peak growth on the hold/trailing path (mirrors
                         // the previous inline behaviour: peak rises before the
                         // trailing-stop check; take-profit/stop-loss/time-stop
                         // leave the peak untouched and then remove it on close).
                         if new_peak > prev_peak {
-                            peak_roi.insert(pos_id.to_string(), new_peak);
+                            peak_roi.insert(pos_id.clone(), new_peak);
                             peak_changed = true;
                         }
                         match decision {
@@ -5098,7 +5124,7 @@ async fn cmd_monitor(
                                 if let Err(e) = store::close_follow_position(&r.condition_id, &r.outcome, current, &reason) {
                                     eprintln!("warn: failed to close take-profit position: {e}");
                                 }
-                                peak_roi.remove(pos_id);
+                                peak_roi.remove(&pos_id);
                                 peak_changed = true;
                                 closed_any += 1;
                                 eprintln!("\n  TAKE-PROFIT: {} @ {:.3} -> {:.3} ({:+.1}%)", r.market_title, entry, current, roi);
@@ -5108,7 +5134,7 @@ async fn cmd_monitor(
                                 if let Err(e) = store::close_follow_position(&r.condition_id, &r.outcome, current, &reason) {
                                     eprintln!("warn: failed to close stop-loss position: {e}");
                                 }
-                                peak_roi.remove(pos_id);
+                                peak_roi.remove(&pos_id);
                                 peak_changed = true;
                                 closed_any += 1;
                                 eprintln!("\n  STOP-LOSS: {} @ {:.3} -> {:.3} ({:+.1}%)", r.market_title, entry, current, roi);
@@ -5118,7 +5144,7 @@ async fn cmd_monitor(
                                 if let Err(e) = store::close_follow_position(&r.condition_id, &r.outcome, current, &reason) {
                                     eprintln!("warn: failed to close time-stop position: {e}");
                                 }
-                                peak_roi.remove(pos_id);
+                                peak_roi.remove(&pos_id);
                                 peak_changed = true;
                                 closed_any += 1;
                                 eprintln!("\n  TIME-STOP: {} ({}d, ROI {:.1}%) @ {:.3}", r.market_title, age_days, roi, current);
@@ -5130,7 +5156,7 @@ async fn cmd_monitor(
                                 if let Err(e) = store::close_follow_position(&r.condition_id, &r.outcome, current, &reason) {
                                     eprintln!("warn: failed to close trailing-stop position: {e}");
                                 }
-                                peak_roi.remove(pos_id);
+                                peak_roi.remove(&pos_id);
                                 peak_changed = true;
                                 closed_any += 1;
                                 eprintln!("\n  TRAILING-STOP: {} peak {:.1}% -> now {:.1}% (threshold {:.1}%) @ {:.3}", r.market_title, current_peak, roi, threshold, current);
@@ -5139,10 +5165,11 @@ async fn cmd_monitor(
                         }
                     }
 
-                    // Clean up peak_roi for closed positions
-                    let open_pos_ids: std::collections::HashSet<String> = open_positions.iter()
-                        .filter_map(|r| r.position_id.clone())
-                        .collect();
+                    // Clean up peak_roi for closed positions. PM-P01: key the
+                    // retain set identically to the write key (peak_key_for), so
+                    // position_id=None rows (keyed by condition_id) are not wiped.
+                    let open_pos_ids: std::collections::HashSet<String> =
+                        open_peak_keys_for(&open_positions);
                     peak_roi.retain(|k, _| open_pos_ids.contains(k));
 
                     if peak_changed {
@@ -7244,5 +7271,77 @@ mod tests {
             "got {}",
             stats.total_pnl
         );
+    }
+
+    // PM-P01: peak-ROI key derivation + retain-set consistency.
+    fn follow_record(json: &str) -> FollowRecord {
+        serde_json::from_str(json).expect("valid FollowRecord")
+    }
+
+    // condition_id "c1" / outcome YES, no position_id (None via #[serde(default)]).
+    const REC_NO_PID: &str = r#"{"timestamp":"2026-01-01T00:00:00Z","signal_id":"s1","market_title":"m","condition_id":"c1","asset":"BTC","outcome":"YES","side":"BUY","amount_usdc":10.0,"price":0.5,"dry_run":true,"status":"Open","realized_pnl":0.0,"entry_reason":"smart:x"}"#;
+    // Same market/condition_id "c1" but outcome NO, also no position_id.
+    const REC_NO_PID_NO: &str = r#"{"timestamp":"2026-01-01T00:00:00Z","signal_id":"s1b","market_title":"m","condition_id":"c1","asset":"BTC","outcome":"NO","side":"BUY","amount_usdc":10.0,"price":0.5,"dry_run":true,"status":"Open","realized_pnl":0.0,"entry_reason":"smart:x"}"#;
+    // condition_id "c2", position_id "p2".
+    const REC_WITH_PID: &str = r#"{"timestamp":"2026-01-01T00:00:00Z","signal_id":"s2","market_title":"m","condition_id":"c2","asset":"BTC","outcome":"YES","side":"BUY","amount_usdc":10.0,"price":0.5,"dry_run":true,"status":"Open","realized_pnl":0.0,"entry_reason":"smart:y","position_id":"p2"}"#;
+    // position_id "c1" deliberately equals REC_NO_PID's condition_id, to prove the
+    // pid:/legacy: namespacing keeps them apart (own condition_id is "c9").
+    const REC_PID_EQ_CID: &str = r#"{"timestamp":"2026-01-01T00:00:00Z","signal_id":"s3","market_title":"m","condition_id":"c9","asset":"BTC","outcome":"YES","side":"BUY","amount_usdc":10.0,"price":0.5,"dry_run":true,"status":"Open","realized_pnl":0.0,"entry_reason":"smart:z","position_id":"c1"}"#;
+
+    #[test]
+    fn peak_key_prefers_position_id_else_condition_id() {
+        let with_pid = follow_record(REC_WITH_PID);
+        assert_eq!(peak_key_for(&with_pid), "pid:p2");
+
+        let no_pid = follow_record(REC_NO_PID);
+        assert_eq!(no_pid.position_id, None);
+        assert_eq!(peak_key_for(&no_pid), "legacy:c1:YES");
+    }
+
+    #[test]
+    fn open_peak_keys_include_condition_id_for_none_position_id() {
+        // Regression: a position_id=None row must contribute its (namespaced)
+        // condition_id key to the retain set, else its peak is wiped every monitor
+        // cycle and its trailing stop never accumulates (PM-P01).
+        let no_pid = follow_record(REC_NO_PID);
+        let with_pid = follow_record(REC_WITH_PID);
+        let rows: Vec<&FollowRecord> = vec![&no_pid, &with_pid];
+        let keys = open_peak_keys_for(&rows);
+        assert!(
+            keys.contains("legacy:c1:YES"),
+            "None position_id must retain by namespaced condition_id key"
+        );
+        assert!(
+            keys.contains("pid:p2"),
+            "Some position_id retained by namespaced position_id key"
+        );
+        assert_eq!(keys.len(), 2);
+    }
+
+    #[test]
+    fn none_position_id_same_market_different_outcome_do_not_collide() {
+        // PM-P01 collision case (a): two position_id=None rows on the same market
+        // (condition_id "c1") but opposite outcomes must NOT share one peak entry,
+        // else YES/NO trailing peaks corrupt each other.
+        let yes = follow_record(REC_NO_PID);
+        let no = follow_record(REC_NO_PID_NO);
+        assert_ne!(peak_key_for(&yes), peak_key_for(&no));
+        let rows: Vec<&FollowRecord> = vec![&yes, &no];
+        assert_eq!(
+            open_peak_keys_for(&rows).len(),
+            2,
+            "YES/NO on the same market must occupy distinct peak keys"
+        );
+    }
+
+    #[test]
+    fn position_id_cannot_collide_with_another_rows_condition_id() {
+        // PM-P01 collision case (b): an (imported) position_id equal to another
+        // row's condition_id must not collide, thanks to pid:/legacy: namespacing.
+        let no_pid = follow_record(REC_NO_PID); // condition_id "c1" -> legacy:c1:YES
+        let pid_eq_cid = follow_record(REC_PID_EQ_CID); // position_id "c1" -> pid:c1
+        assert_ne!(peak_key_for(&no_pid), peak_key_for(&pid_eq_cid));
+        let rows: Vec<&FollowRecord> = vec![&no_pid, &pid_eq_cid];
+        assert_eq!(open_peak_keys_for(&rows).len(), 2);
     }
 }
