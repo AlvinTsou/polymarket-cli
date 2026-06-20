@@ -5,9 +5,8 @@
 
 ## Live state (2026-06-20)
 
-- **Branch**: `main`. Pushed through `000c6ac` (PhaseConfig::new + match_phase_checked
-  + Codex round-2 fixes, SHIP). **1 commit ahead unpushed**: `f81d3fe` (slice A:
-  `market_match_phase` gamma bridge) — needs Codex review before push per gate.
+- **Branch**: `main`, **synced with `origin/main`** (`6afd093`, nothing unpushed).
+  Slice A (`f81d3fe` `market_match_phase` gamma bridge) Codex-reviewed **SHIP** + pushed.
 - **Green gate**: `cargo test` = **210 passed** (158 bin + 52 integration). `cargo fmt` clean.
   (Note: `cargo test --lib` fails — binary crate has no lib target; use `--bin polymarket`.)
 
@@ -28,7 +27,6 @@
   Built by hand, NOT AgentFlow (memory `feedback-when-to-use-agentflow`).
 
 ## Next steps
-0. **Push `f81d3fe`** (slice A) once a Codex /cso review passes (push gate).
 1. **WC fixture wiring — Slice B (BLOCKED on intent decision):** hook
    `market_match_phase` into `cmd_monitor` (`src/commands/smart.rs:4577`). Gamma
    already gives `game_start_time` + `end_date`, so NO separate schedule source is
@@ -45,6 +43,9 @@
      present, or a tag/keyword allowlist? (slice A treats absent game_start_time as
      `Unscheduled` → fall back to normal path, so present-field gating is the cheap
      default.)
+   - Codex slice-A NIT (decide at wiring): treat `Some("")`/whitespace
+     `game_start_time` as `Unscheduled` (fallback) vs `UnparseableKickoff` (hard
+     error). `parse_from_rfc3339` already rejects empty → currently `UnparseableKickoff`.
    **Must-fix prerequisite DONE** (`1cc069f` + Codex round-2 `570c9f1`):
    `PhaseConfig::new` enforces windows `>= 0` and **STRICT** `settlement_watch <
    exit_window` (equality collapses the ExitWindow band → `requires_exit()` never
