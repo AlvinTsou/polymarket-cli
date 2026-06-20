@@ -5,39 +5,34 @@
 
 ## Live state (2026-06-20)
 
-- **Branch**: `main`, tracking `origin/main`, **ahead 1** (`bc59345` unpushed).
-- **Latest commits**:
-  - `bc59345` feat(fixtures): WC fixture lifecycle state machine (pure core) — **unpushed**
-  - `3213d9a` fix(smart): PM-P01 peak wiped each cycle for None position_id — **pushed**
-- **Green gate**: `cargo test` = **194 passed** (142 bin + 52 integration). `cargo fmt` clean.
+- **Branch**: `main`, **synced with `origin/main`** (nothing unpushed). Latest `d6eaffc`.
+- **Green gate**: `cargo test` = **196 passed** (144 bin + 52 integration). `cargo fmt` clean.
 
-### Done this session
-- **PM-P01 FIXED + COMMITTED + PUSHED** (`3213d9a`). Trailing-stop `peak_roi` was
-  wiped each monitor cycle for `position_id=None` rows (write key vs retain key
-  diverged). Fix: single `peak_key_for` → NAMESPACED key `pid:{position_id}` else
+### Done this session (all PUSHED)
+- **PM-P01** (`3213d9a`). Trailing-stop `peak_roi` was wiped each monitor cycle for
+  `position_id=None` rows (write key vs retain key diverged). Fix: single
+  `peak_key_for` → NAMESPACED key `pid:{position_id}` else
   `legacy:{condition_id}:{outcome}`; all get/insert/remove + retain route through it.
-  Codex /cso-reviewed (caught + fixed two latent collisions: YES/NO same-market, and
-  position_id == another row's condition_id). 4 peak-key tests incl. 2 collision
-  regressions.
-- **WC fixture lifecycle state machine** (`bc59345`, `src/fixtures/mod.rs`, pure core,
-  **unpushed**). `MatchPhase`: PreMatch → EntryWindow → LockedInPlay → ExitWindow →
-  SettlementWatch → Settled; `match_phase(now,kickoff,settlement,&PhaseConfig)`,
-  boundaries latest-first (degenerate short gap degrades to risk-reducing phase).
-  Defaults: enter ≤60m pre-kickoff, force paper-exit 15m pre-settlement, last 5m
-  watch-only. Targets the atomic-settlement -99% risk. `#![allow(dead_code)]` until
-  wired. 7 unit tests. Built by hand (NOT AgentFlow — see memory
-  `feedback-when-to-use-agentflow`).
+  Codex /cso caught + fixed two latent collisions (YES/NO same-market; position_id ==
+  another row's condition_id). 4 peak-key tests incl. 2 collision regressions.
+- **WC fixture lifecycle state machine** (`bc59345` + `d6eaffc`, `src/fixtures/mod.rs`,
+  PURE CORE). `MatchPhase`: PreMatch → EntryWindow → LockedInPlay → ExitWindow →
+  SettlementWatch → Settled; `match_phase(now,kickoff,settlement,PhaseConfig)` (by
+  value), boundaries latest-first. Defaults: enter ≤60m pre-kickoff, force paper-exit
+  15m pre-settlement, last 5m watch-only. Targets the atomic-settlement -99% risk.
+  `#![allow(dead_code)]` until wired. 9 unit tests. Codex /cso-reviewed (verdict: safe
+  to push as pure core; validated constructor deferred to wiring — see Next step 1).
+  Built by hand, NOT AgentFlow (memory `feedback-when-to-use-agentflow`).
 
 ## Next steps
-1. **Push `bc59345`** — gated on a Codex review passing (per push-gate rule).
-2. **WC fixture follow-on slices** (deferred; side-effectful, hand-write or separate
+1. **WC fixture follow-on slices** (deferred; side-effectful, hand-write or separate
    slice): schedule ingestion → Polymarket market mapping → monitor-cycle wiring that
    consumes `match_phase` (entry gate / force-exit). Do AFTER phase contract stable.
    **Must-fix BEFORE live wiring** (Codex /cso): add `PhaseConfig::new(...) -> Result`
    enforcing windows `>= 0`, `settlement_watch <= exit_window` (else SettlementWatch
    swallows the force-exit window), and treat `settlement <= kickoff` as invalid;
    then drop the module-wide `#![allow(dead_code)]`.
-3. **PM-P01 live-sample verify**: confirm trailing stop now fires for a real
+2. **PM-P01 live-sample verify**: confirm trailing stop now fires for a real
    `position_id=None` open position. BLOCKED: follows.jsonl currently 0 Open,
    `peak_roi.json={}` — no live sample exists yet.
 
