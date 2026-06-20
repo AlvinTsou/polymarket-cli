@@ -3,6 +3,7 @@ mod auth;
 mod commands;
 mod config;
 mod crypto;
+mod fixtures;
 mod output;
 mod shell;
 mod smart;
