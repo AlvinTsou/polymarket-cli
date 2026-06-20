@@ -28,13 +28,69 @@ pub const DEFAULT_EXIT_WINDOW_MINS: i64 = 15;
 /// for resolution; never open or actively manage here.
 pub const DEFAULT_SETTLEMENT_WATCH_MINS: i64 = 5;
 
+/// Invariant violation rejected by the validated constructors. Keeping these typed
+/// (rather than `anyhow`) lets callers — and tests — distinguish *which* contract
+/// broke before any live wiring relies on the phase classification.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PhaseError {
+    /// One of the phase windows was negative.
+    NegativeWindow,
+    /// `settlement_watch > exit_window`: the watch window would swallow the whole
+    /// force-exit window, so `requires_exit()` could never fire.
+    SettlementWatchExceedsExit,
+    /// A fixture's `settlement` anchor was not strictly after its `kickoff`.
+    SettlementNotAfterKickoff,
+}
+
+impl std::fmt::Display for PhaseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let msg = match self {
+            PhaseError::NegativeWindow => "phase window must be non-negative",
+            PhaseError::SettlementWatchExceedsExit => "settlement_watch must be <= exit_window",
+            PhaseError::SettlementNotAfterKickoff => "settlement must be strictly after kickoff",
+        };
+        f.write_str(msg)
+    }
+}
+
+impl std::error::Error for PhaseError {}
+
 /// Tunable phase boundaries. All durations are measured relative to a fixture's
 /// `kickoff` (entry) or expected `settlement` (exit / watch).
+///
+/// Prefer [`PhaseConfig::new`] over struct literals when the windows are not
+/// compile-time constants: it enforces the invariants the phase classification
+/// relies on. [`PhaseConfig::default`] is pre-validated by construction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PhaseConfig {
     pub entry_window: Duration,
     pub exit_window: Duration,
     pub settlement_watch: Duration,
+}
+
+impl PhaseConfig {
+    /// Validated constructor enforcing: all windows `>= 0`, and
+    /// `settlement_watch <= exit_window` (so the force-exit window is never empty).
+    pub fn new(
+        entry_window: Duration,
+        exit_window: Duration,
+        settlement_watch: Duration,
+    ) -> Result<Self, PhaseError> {
+        if entry_window < Duration::zero()
+            || exit_window < Duration::zero()
+            || settlement_watch < Duration::zero()
+        {
+            return Err(PhaseError::NegativeWindow);
+        }
+        if settlement_watch > exit_window {
+            return Err(PhaseError::SettlementWatchExceedsExit);
+        }
+        Ok(Self {
+            entry_window,
+            exit_window,
+            settlement_watch,
+        })
+    }
 }
 
 impl Default for PhaseConfig {
@@ -92,11 +148,12 @@ impl MatchPhase {
 /// `settlement_watch >= exit_window` the `SettlementWatch` window swallows
 /// `ExitWindow` and `requires_exit()` never fires.
 ///
-/// Expected config invariants (held by [`PhaseConfig::default`]; NOT validated on the
-/// public fields — a validated constructor is deferred to the wiring slice):
-/// `kickoff <= settlement`, all windows `>= 0`, and `settlement_watch <= exit_window`
-/// (so the force-exit window is never empty). Out-of-invariant input is classified
-/// deterministically but the phase semantics may not match intent.
+/// Config invariants (`all windows >= 0`, `settlement_watch <= exit_window`) are
+/// enforced by [`PhaseConfig::new`] and held by [`PhaseConfig::default`]; the anchor
+/// invariant `kickoff < settlement` is enforced by [`match_phase_checked`]. This raw
+/// entry point does NOT re-validate: out-of-invariant input is classified
+/// deterministically but the phase semantics may not match intent — prefer
+/// [`match_phase_checked`] at the wiring boundary.
 pub fn match_phase(
     now: DateTime<Utc>,
     kickoff: DateTime<Utc>,
@@ -120,6 +177,22 @@ pub fn match_phase(
     } else {
         MatchPhase::PreMatch
     }
+}
+
+/// Validated wrapper over [`match_phase`] that rejects degenerate fixture anchors
+/// (`settlement <= kickoff`) up front, so live wiring never feeds the classifier a
+/// timeline where the entry window opens after the exit window. With valid anchors it
+/// returns exactly what [`match_phase`] would.
+pub fn match_phase_checked(
+    now: DateTime<Utc>,
+    kickoff: DateTime<Utc>,
+    settlement: DateTime<Utc>,
+    cfg: PhaseConfig,
+) -> Result<MatchPhase, PhaseError> {
+    if settlement <= kickoff {
+        return Err(PhaseError::SettlementNotAfterKickoff);
+    }
+    Ok(match_phase(now, kickoff, settlement, cfg))
 }
 
 #[cfg(test)]
@@ -220,6 +293,91 @@ mod tests {
         assert_eq!(
             match_phase(ko, ko, ko, PhaseConfig::default()),
             MatchPhase::Settled
+        );
+    }
+
+    #[test]
+    fn phase_config_new_accepts_valid_defaults() {
+        let cfg = PhaseConfig::new(
+            Duration::minutes(DEFAULT_ENTRY_WINDOW_MINS),
+            Duration::minutes(DEFAULT_EXIT_WINDOW_MINS),
+            Duration::minutes(DEFAULT_SETTLEMENT_WATCH_MINS),
+        )
+        .unwrap();
+        assert_eq!(cfg, PhaseConfig::default());
+    }
+
+    #[test]
+    fn phase_config_new_rejects_negative_window() {
+        for (e, x, w) in [
+            (
+                Duration::minutes(-1),
+                Duration::minutes(15),
+                Duration::minutes(5),
+            ),
+            (
+                Duration::minutes(60),
+                Duration::minutes(-1),
+                Duration::minutes(5),
+            ),
+            (
+                Duration::minutes(60),
+                Duration::minutes(15),
+                Duration::minutes(-1),
+            ),
+        ] {
+            assert_eq!(PhaseConfig::new(e, x, w), Err(PhaseError::NegativeWindow));
+        }
+    }
+
+    #[test]
+    fn phase_config_new_rejects_watch_exceeding_exit() {
+        // settlement_watch (16m) > exit_window (15m): the watch window would swallow
+        // the whole force-exit window, so requires_exit() could never fire.
+        assert_eq!(
+            PhaseConfig::new(
+                Duration::minutes(60),
+                Duration::minutes(15),
+                Duration::minutes(16),
+            ),
+            Err(PhaseError::SettlementWatchExceedsExit)
+        );
+    }
+
+    #[test]
+    fn phase_config_new_allows_watch_equal_exit() {
+        // Boundary: invariant is settlement_watch <= exit_window, so equal is valid.
+        assert!(
+            PhaseConfig::new(
+                Duration::minutes(60),
+                Duration::minutes(15),
+                Duration::minutes(15),
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn match_phase_checked_rejects_settlement_at_or_before_kickoff() {
+        let ko = kickoff();
+        let cfg = PhaseConfig::default();
+        assert_eq!(
+            match_phase_checked(ko, ko, ko, cfg),
+            Err(PhaseError::SettlementNotAfterKickoff)
+        );
+        assert_eq!(
+            match_phase_checked(ko, ko, ko - Duration::minutes(1), cfg),
+            Err(PhaseError::SettlementNotAfterKickoff)
+        );
+    }
+
+    #[test]
+    fn match_phase_checked_agrees_with_match_phase_for_valid_input() {
+        let now = at(19, 35);
+        let cfg = PhaseConfig::default();
+        assert_eq!(
+            match_phase_checked(now, kickoff(), settlement(), cfg),
+            Ok(match_phase(now, kickoff(), settlement(), cfg))
         );
     }
 
